@@ -1,0 +1,43 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e . pytest
+      - run: pytest -q
+
+  windows-exe:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install . pyinstaller
+      - name: GUI (pede administrador)
+        run: pyinstaller --onefile --windowed --uac-admin --name UnfragDark --paths src launcher.py
+      - name: CLI
+        run: pyinstaller --onefile --uac-admin --name unfrag --paths src launcher.py
+      - name: Smoke test do CLI em modo demo
+        run: .\dist\unfrag.exe --demo list
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UnfragDark-windows
+          path: dist/*.exe
