@@ -70,6 +70,15 @@ unfrag --demo gui
 unfrag --demo defrag C: --mode freespace
 ```
 
+## Velocidade da análise
+
+* Os arquivos são lidos em **várias threads** (`UNFRAG_THREADS=N` para ajustar; padrão: 2 por núcleo, até 16) —
+  a espera pelo disco libera o GIL, então a leitura de extents é paralela.
+* Arquivos que cabem em **1 cluster não podem fragmentar** e são apenas contados, sem abrir o arquivo.
+* O mapa de clusters livres é interpretado por blocos homogêneos (≈10× mais rápido que bit a bit).
+* Buffers reaproveitados por thread e caminhos longos sem `abspath` por arquivo.
+* A janela e a CLI mostram o tempo da análise.
+
 ## Segurança — leia antes de usar em disco real
 
 * **Faça backup.** O `FSCTL_MOVE_FILE` é a API oficial e segura do NTFS, mas qualquer ferramenta que

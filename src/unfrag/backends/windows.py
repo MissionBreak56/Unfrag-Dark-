@@ -13,6 +13,7 @@ import ctypes
 import os
 import struct
 import sys
+import threading
 from ctypes import wintypes as wt
 from typing import Iterator, List, Optional
 
@@ -20,6 +21,7 @@ if sys.platform != "win32":  # pragma: no cover
     raise ImportError("backend Windows só funciona no Windows")
 
 from ..model import DriveInfo, Extent, FileInfo
+from ..scan import parallel_scan
 from .base import MoveError, VolumeBackend
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -85,8 +87,11 @@ def _open(path: str, access: int, flags: int = FILE_FLAG_BACKUP_SEMANTICS) -> in
 
 
 def _long(path: str) -> str:
-    path = os.path.abspath(path)
-    return path if path.startswith("\\\\?\\") else "\\\\?\\" + path
+    if path.startswith("\\\\?\\"):
+        return path
+    if len(path) > 2 and path[1] == ":":  # caminho absoluto vindo do scandir: sem abspath()
+        return "\\\\?\\" + path
+    return "\\\\?\\" + os.path.abspath(path)
 
 
 def is_admin() -> bool:
@@ -161,6 +166,7 @@ class WindowsVolume(VolumeBackend):
         self.cluster_size = spc.value * bps.value
         self.total_clusters = total.value
         self._ssd = _query_ssd(self.letter)
+        self._tls = threading.local()
         self._vol = _open("\\\\.\\%s:" % self.letter, GENERIC_READ, 0)
         # GetDiskFreeSpaceW satura em 32 bits; o bitmap dá o número real de clusters
         self._fix_total_clusters()
@@ -207,10 +213,18 @@ class WindowsVolume(VolumeBackend):
         return bytes(out)
 
     # --- arquivos ----------------------------------------------------------
+    def _buffer(self, size: int):
+        """Buffer reaproveitado por thread (evita alocar e zerar 64 KB a cada arquivo)."""
+        buf = getattr(self._tls, "buf", None)
+        if buf is None or len(buf) < size:
+            buf = self._tls.buf = ctypes.create_string_buffer(size)
+        return buf
+
     def _extents(self, h: int) -> List[Extent]:
         extents: List[Extent] = []
-        size = 64 * 1024
-        buf = ctypes.create_string_buffer(size)
+        size = 8 * 1024  # cabe ~500 extents; se faltar, ERROR_MORE_DATA continua o laço
+        buf = self._buffer(size)
+        raw_unpack = struct.unpack_from
         start_vcn = 0
         while True:
             inbuf = ctypes.c_int64(start_vcn)
@@ -222,11 +236,14 @@ class WindowsVolume(VolumeBackend):
                 if err == ERROR_HANDLE_EOF:
                     return extents
                 raise OSError(err, "FSCTL_GET_RETRIEVAL_POINTERS falhou (erro %d)" % err)
-            count = struct.unpack_from("<I", buf.raw, 0)[0]
-            vcn = struct.unpack_from("<q", buf.raw, 8)[0]
+            if ret.value < 16:
+                raise OSError(err, "FSCTL_GET_RETRIEVAL_POINTERS devolveu dados incompletos")
+            raw = ctypes.string_at(buf, ret.value)
+            count = raw_unpack("<I", raw, 0)[0]
+            vcn = raw_unpack("<q", raw, 8)[0]
             off = 16
             for _ in range(count):
-                next_vcn, lcn = struct.unpack_from("<qq", buf.raw, off)
+                next_vcn, lcn = raw_unpack("<qq", raw, off)
                 extents.append(Extent(vcn, lcn, next_vcn - vcn))
                 vcn = next_vcn
                 off += 16
@@ -273,14 +290,11 @@ class WindowsVolume(VolumeBackend):
         finally:
             k32.CloseHandle(h)
 
-    def iter_files(self, root: Optional[str], recurse: bool) -> Iterator[FileInfo]:
-        root = root or ("%s:\\" % self.letter)
-        if os.path.isfile(root):
-            st = os.stat(root)
-            info = self._scan(root, st.st_size, getattr(st, "st_file_attributes", 0))
-            if info:
-                yield info
-            return
+    def _walk(self, root: str, recurse: bool):
+        """Percorre as pastas (rápido: scandir já traz tamanho e atributos).
+        Arquivos que cabem em 1 cluster não podem fragmentar e só são contados."""
+        cs = self.cluster_size
+        skip_attrs = ATTR_REPARSE | ATTR_SPARSE | ATTR_COMPRESSED | ATTR_ENCRYPTED | ATTR_OFFLINE
         stack = [root]
         while stack:
             d = stack.pop()
@@ -297,13 +311,29 @@ class WindowsVolume(VolumeBackend):
                             if recurse and not attrs & ATTR_REPARSE:
                                 stack.append(e.path)
                             continue
-                        if st.st_size == 0:
-                            continue
-                        info = self._scan(e.path, st.st_size, attrs)
+                        size = st.st_size
                     except OSError:
                         continue
-                    if info:
-                        yield info
+                    if size == 0:
+                        continue
+                    if size <= cs and not attrs & skip_attrs and e.name.lower() not in SYSTEM_NAMES:
+                        self.trivial_files += 1
+                        self.trivial_bytes += size
+                        continue
+                    yield (e.path, size, attrs)
+
+    def iter_files(self, root: Optional[str], recurse: bool) -> Iterator[FileInfo]:
+        self.trivial_files = 0
+        self.trivial_bytes = 0
+        root = root or ("%s:\\" % self.letter)
+        if os.path.isfile(root):
+            st = os.stat(root)
+            info = self._scan(root, st.st_size, getattr(st, "st_file_attributes", 0))
+            if info:
+                yield info
+            return
+        workers = int(os.environ.get("UNFRAG_THREADS", 0)) or min(16, (os.cpu_count() or 4) * 2)
+        yield from parallel_scan(self._walk(root, recurse), lambda t: self._scan(*t), workers=workers)
 
     # --- mover -------------------------------------------------------------
     def move_clusters(self, path: str, vcn: int, lcn: int, count: int) -> None:

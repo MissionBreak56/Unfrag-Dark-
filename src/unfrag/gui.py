@@ -647,8 +647,8 @@ class App:
                 self._log("  falha: %s — %s" % (p, why))
             self.v_status.set("Cancelado." if rep.cancelled else "Concluído em %.1f s." % rep.seconds)
         else:
-            self.v_status.set("Análise concluída: %.1f%% fragmentado." % r.fragmentation_percent)
-            self._log("Análise: %.1f%% fragmentado, %d arquivos fragmentados" % (r.fragmentation_percent, r.fragmented_files))
+            self.v_status.set("Análise concluída em %.1f s: %.1f%% fragmentado, %d arquivos." % (r.seconds, r.fragmentation_percent, r.files))
+            self._log("Análise em %.1f s: %.1f%% fragmentado, %d de %d arquivos fragmentados" % (r.seconds, r.fragmentation_percent, r.fragmented_files, r.files))
         self._draw_map()
         self._fill_files()
 

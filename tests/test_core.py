@@ -209,3 +209,91 @@ def test_cli_demo(capsys):
     assert "Antes" in out and "Depois" in out
     assert main(["--demo", "defrag", "E:"]) == 4  # SSD ignorado
     assert main(["schedule", "create", "C:", "--dry-run"]) == 0
+
+
+# ---- velocidade da análise ---------------------------------------------
+import random
+import time
+
+from unfrag.scan import parallel_scan
+
+
+def _runs_reference(bitmap, total):
+    runs, start = [], None
+    for c in range(total):
+        used = (bitmap[c >> 3] >> (c & 7)) & 1
+        if used and start is not None:
+            runs.append((start, c - start))
+            start = None
+        elif not used and start is None:
+            start = c
+    if start is not None:
+        runs.append((start, total - start))
+    return runs
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_fast_bitmap_parser_matches_bit_by_bit_reference(seed):
+    rnd = random.Random(seed)
+    parts = []
+    for _ in range(rnd.randint(1, 40)):
+        k = rnd.choice("fzm")
+        n = rnd.randint(1, 30)
+        parts.append(b"\xff" * n if k == "f" else b"\x00" * n if k == "z"
+                     else bytes(rnd.randrange(256) for _ in range(n)))
+    bm = b"".join(parts)
+    total = len(bm) * 8 - rnd.randint(0, 7)  # total que não é múltiplo de 8
+    assert runs_from_bitmap(bm, total) == _runs_reference(bm, total)
+
+
+def test_fast_bitmap_parser_is_fast():
+    bm = (b"\xff" * 5000 + b"\x00" * 700 + b"\x5a" * 3) * 400  # ~3,4 MB
+    t = time.time()
+    runs_from_bitmap(bm, len(bm) * 8)
+    assert time.time() - t < 1.0
+
+
+def test_parallel_scan_keeps_order_and_drops_none():
+    def fn(i):
+        time.sleep(0.001 * (i % 3))
+        return None if i % 5 == 0 else i * 2
+
+    items = list(range(300))
+    expected = [i * 2 for i in items if i % 5]
+    assert list(parallel_scan(items, fn, workers=8, batch=7)) == expected
+    assert list(parallel_scan(items, fn, workers=1)) == expected
+
+
+def test_parallel_scan_runs_concurrently():
+    def slow(i):
+        time.sleep(0.02)
+        return i
+
+    t = time.time()
+    list(parallel_scan(range(64), slow, workers=8, batch=2))
+    assert time.time() - t < 64 * 0.02 / 3  # bem mais rápido que sequencial
+
+
+def test_parallel_scan_propagates_errors():
+    def boom(i):
+        if i == 10:
+            raise RuntimeError("falha")
+        return i
+
+    with pytest.raises(RuntimeError):
+        list(parallel_scan(range(50), boom, workers=4, batch=3))
+
+
+def test_trivial_files_are_counted_without_changing_results():
+    a, b = FakeVolume.demo(seed=1), FakeVolume.demo(seed=1)
+    b.count_trivial = True
+    # garante alguns arquivos de 1 cluster em ambos
+    for v in (a, b):
+        free = [c for c in v.free_clusters() if c > v.total_clusters - 100][:3]
+        for i, c in enumerate(free):
+            v.add_file("C:\\tiny%d.txt" % i, [c])
+    ra, rb = Engine(a).analyze(), Engine(b).analyze()
+    assert rb.files == ra.files and rb.total_bytes == ra.total_bytes
+    assert rb.fragmented_files == ra.fragmented_files
+    assert abs(rb.fragmentation_percent - ra.fragmentation_percent) < 1e-9
+    assert Engine(b).analyze().seconds >= 0

@@ -24,11 +24,12 @@ def _extents_from_lcns(lcns: List[int]) -> List[Extent]:
 
 class FakeVolume(VolumeBackend):
     def __init__(self, total_clusters: int = 20000, cluster_size: int = 4096,
-                 ssd: Optional[bool] = False, delay: float = 0.0):
+                 ssd: Optional[bool] = False, delay: float = 0.0, count_trivial: bool = False):
         self.total_clusters = total_clusters
         self.cluster_size = cluster_size
         self._ssd = ssd
         self.delay = delay
+        self.count_trivial = count_trivial
         self.owner: List[Optional[str]] = [None] * total_clusters
         self.files: Dict[str, List[int]] = {}
         self.skip: Dict[str, str] = {}
@@ -128,6 +129,7 @@ class FakeVolume(VolumeBackend):
 
     def iter_files(self, root: Optional[str], recurse: bool) -> Iterator[FileInfo]:
         prefix = (root or "").lower().rstrip("\\")
+        self.trivial_files = self.trivial_bytes = 0
         for path in sorted(self.files):
             low = path.lower()
             if prefix and low != prefix:
@@ -135,6 +137,10 @@ class FakeVolume(VolumeBackend):
                     continue
                 if not recurse and "\\" in low[len(prefix) + 1:]:
                     continue
+            if self.count_trivial and len(self.files[path]) <= 1 and path not in self.skip:
+                self.trivial_files += 1
+                self.trivial_bytes += self.cluster_size
+                continue
             yield self._info(path)
 
     def get_file(self, path: str) -> Optional[FileInfo]:

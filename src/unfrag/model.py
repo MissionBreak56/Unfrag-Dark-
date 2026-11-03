@@ -88,6 +88,7 @@ class AnalysisResult:
     total_bytes: int = 0
     fragmented_bytes: int = 0
     unmovable_files: int = 0
+    seconds: float = 0.0
 
     @property
     def fragmentation_percent(self) -> float:

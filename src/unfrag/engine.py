@@ -75,6 +75,8 @@ class Engine:
         self.files: Dict[str, FileInfo] = {}
         self.free = FreeMap()
         self.result = AnalysisResult()
+        self.trivial_files = 0
+        self.trivial_bytes = 0
 
     # --- utilidades --------------------------------------------------------
     def _emit(self, phase: str, done: int, total: int, msg: str = "") -> None:
@@ -87,18 +89,25 @@ class Engine:
 
     # --- análise -----------------------------------------------------------
     def analyze(self, root: Optional[str] = None, recurse: bool = True) -> AnalysisResult:
+        t0 = time.time()
         self.files = {}
+        self.trivial_files = self.trivial_bytes = 0
+        self._emit("scan", 0, 0, "lendo o mapa de clusters…")
         bitmap = self.backend.read_bitmap()
         self.free = FreeMap.from_bitmap(bitmap, self.backend.total_clusters)
         n = 0
         for f in self.backend.iter_files(root, recurse):
             self.files[f.path] = f
             n += 1
-            if n % 200 == 0:
+            if n % 500 == 0:
                 self._check_cancel()
-                self._emit("scan", n, 0, f.path)
-        self._emit("scan", n, n, "")
+                self._emit("scan", n + self.backend.trivial_files, 0, f.path)
+        self.trivial_files = self.backend.trivial_files
+        self.trivial_bytes = self.backend.trivial_bytes
+        total = n + self.trivial_files
+        self._emit("scan", total, total, "")
         self.result = self._summarize()
+        self.result.seconds = time.time() - t0
         return self.result
 
     def _summarize(self) -> AnalysisResult:
@@ -107,6 +116,8 @@ class Engine:
                            free_clusters=self.free.total_free,
                            free_runs=len(self.free),
                            largest_free_run=self.free.largest)
+        r.files += self.trivial_files
+        r.total_bytes += self.trivial_bytes
         for f in self.files.values():
             if not f.extents:
                 continue

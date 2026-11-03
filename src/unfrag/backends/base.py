@@ -14,6 +14,10 @@ class MoveError(Exception):
 class VolumeBackend(ABC):
     cluster_size: int = 4096
     total_clusters: int = 0
+    # arquivos que cabem em 1 cluster não podem fragmentar: o backend pode contá-los
+    # sem abri-los (muito mais rápido) em vez de devolvê-los em iter_files
+    trivial_files: int = 0
+    trivial_bytes: int = 0
 
     @property
     def is_ssd(self) -> Optional[bool]:

@@ -2,38 +2,46 @@
 from __future__ import annotations
 
 import bisect
+import re
 from typing import Iterable, List, Optional, Tuple
+
+
+_SEG = re.compile(rb"\xff+|\x00+|[^\x00\xff]+")
 
 
 def runs_from_bitmap(bitmap: bytes, total: int) -> List[Tuple[int, int]]:
     """Converte o bitmap do volume (bit 1 = cluster em uso, LSB primeiro)
-    em uma lista de corridas livres (início, tamanho)."""
+    em uma lista de corridas livres (início, tamanho).
+
+    Rápido: uma regex separa o bitmap em blocos homogêneos (só 0xFF, só 0x00 ou
+    misto); só os bytes mistos são examinados bit a bit."""
     runs: List[Tuple[int, int]] = []
     run_start: Optional[int] = None
-    for i, b in enumerate(bitmap):
-        base = i * 8
-        if base >= total:
-            break
-        if b == 0xFF:
+    bm = bitmap[:(total + 7) // 8]
+    for m in _SEG.finditer(bm):
+        base = m.start() * 8
+        first = bm[m.start()]
+        if first == 0xFF:
             if run_start is not None:
                 runs.append((run_start, base - run_start))
                 run_start = None
-            continue
-        if b == 0:
+        elif first == 0x00:
             if run_start is None:
                 run_start = base
-            continue
-        for bit in range(8):
-            c = base + bit
-            if c >= total:
-                break
-            if (b >> bit) & 1:
-                if run_start is not None:
-                    runs.append((run_start, c - run_start))
-                    run_start = None
-            elif run_start is None:
-                run_start = c
-    if run_start is not None:
+        else:
+            for off, byte in enumerate(m.group()):
+                bbase = base + off * 8
+                for bit in range(8):
+                    c = bbase + bit
+                    if c >= total:
+                        break
+                    if (byte >> bit) & 1:
+                        if run_start is not None:
+                            runs.append((run_start, c - run_start))
+                            run_start = None
+                    elif run_start is None:
+                        run_start = c
+    if run_start is not None and run_start < total:
         runs.append((run_start, total - run_start))
     return runs
 

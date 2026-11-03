@@ -30,6 +30,7 @@ def print_analysis(r: AnalysisResult, title: str = "Análise") -> None:
     print("Arquivos analisados     : %d (%d não movíveis)" % (r.files, r.unmovable_files))
     print("Arquivos fragmentados   : %d (%d fragmentos no total)" % (r.fragmented_files, r.fragments))
     print("Fragmentação            : %.1f%%" % r.fragmentation_percent)
+    print("Tempo da análise        : %.1f s" % r.seconds)
     print("Espaço livre            : %s em %d trechos (maior: %s)" % (
         fmt_bytes(r.free_clusters * cs), r.free_runs, fmt_bytes(r.largest_free_run * cs)))
 
