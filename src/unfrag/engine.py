@@ -28,6 +28,12 @@ QUICK_MAX_BYTES = 256 * MIB
 MOVE_CHUNK_CLUSTERS = 32768
 
 
+def _signature(f: FileInfo) -> tuple:
+    """Posição física do arquivo: dois caminhos com a mesma assinatura são o MESMO arquivo
+    (hard links, comuns no Windows, p.ex. em WinSxS)."""
+    return tuple((e.lcn, e.length) for e in sorted(f.extents, key=lambda e: e.vcn) if not e.is_hole)
+
+
 class Cancelled(Exception):
     pass
 
@@ -77,6 +83,7 @@ class Engine:
         self.result = AnalysisResult()
         self.trivial_files = 0
         self.trivial_bytes = 0
+        self.hardlinks = 0
 
     # --- utilidades --------------------------------------------------------
     def _emit(self, phase: str, done: int, total: int, msg: str = "") -> None:
@@ -92,11 +99,19 @@ class Engine:
         t0 = time.time()
         self.files = {}
         self.trivial_files = self.trivial_bytes = 0
+        self.hardlinks = 0
+        seen = set()
         self._emit("scan", 0, 0, "lendo o mapa de clusters…")
         bitmap = self.backend.read_bitmap()
         self.free = FreeMap.from_bitmap(bitmap, self.backend.total_clusters)
         n = 0
         for f in self.backend.iter_files(root, recurse):
+            sig = _signature(f)
+            if sig:
+                if sig in seen:  # hard link: já contado sob outro nome
+                    self.hardlinks += 1
+                    continue
+                seen.add(sig)
             self.files[f.path] = f
             n += 1
             if n % 500 == 0:
@@ -219,6 +234,13 @@ class Engine:
 
     # --- movimentação ------------------------------------------------------
     def _relocate(self, f: FileInfo, target: int, report: Report) -> bool:
+        # confere o estado REAL do arquivo: outro programa (ou outro nome do mesmo arquivo)
+        # pode tê-lo movido desde a análise
+        fresh = self.backend.get_file(f.path)
+        if fresh is not None and _signature(fresh) != _signature(f):
+            self._resync(f.path)
+            report.skipped.append((f.path, "o arquivo mudou durante a operação"))
+            return False
         old = [(e.lcn, e.length) for e in f.extents if not e.is_hole]
         first_vcn = min(e.vcn for e in f.extents)
         clusters = f.clusters
@@ -232,10 +254,14 @@ class Engine:
             report.failed.append((f.path, str(exc)))
             self._resync(f.path)
             return False
-        for s, n in old:
-            self.free.release(s, n)
-        self.free.allocate(target, clusters)
-        self.files[f.path] = FileInfo(f.path, f.size, [Extent(first_vcn, target, clusters)], f.skip)
+        try:
+            for s, n in old:
+                self.free.release(s, n)
+            self.free.allocate(target, clusters)
+            self.files[f.path] = FileInfo(f.path, f.size, [Extent(first_vcn, target, clusters)], f.skip)
+        except ValueError:
+            # o mapa local divergiu da realidade: o arquivo FOI movido, então só relê tudo
+            self._resync(f.path)
         report.clusters_moved += clusters
         return True
 

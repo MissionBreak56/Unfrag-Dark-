@@ -33,6 +33,7 @@ class FakeVolume(VolumeBackend):
         self.owner: List[Optional[str]] = [None] * total_clusters
         self.files: Dict[str, List[int]] = {}
         self.skip: Dict[str, str] = {}
+        self.alias: Dict[str, str] = {}  # hard links: nome extra -> nome real
         self.fail_paths: set = set()
         self.moves = 0
 
@@ -122,31 +123,38 @@ class FakeVolume(VolumeBackend):
                 out[i >> 3] |= 1 << (i & 7)
         return bytes(out)
 
+    def add_hardlink(self, alias: str, target: str) -> None:
+        self.alias[alias] = target
+
+    def _real(self, path: str) -> str:
+        return self.alias.get(path, path)
+
     def _info(self, path: str) -> FileInfo:
-        lcns = self.files[path]
+        lcns = self.files[self._real(path)]
         return FileInfo(path, len(lcns) * self.cluster_size, _extents_from_lcns(lcns),
-                        self.skip.get(path))
+                        self.skip.get(self._real(path)))
 
     def iter_files(self, root: Optional[str], recurse: bool) -> Iterator[FileInfo]:
         prefix = (root or "").lower().rstrip("\\")
         self.trivial_files = self.trivial_bytes = 0
-        for path in sorted(self.files):
+        for path in sorted(list(self.files) + list(self.alias)):
             low = path.lower()
             if prefix and low != prefix:
                 if not low.startswith(prefix + "\\"):
                     continue
                 if not recurse and "\\" in low[len(prefix) + 1:]:
                     continue
-            if self.count_trivial and len(self.files[path]) <= 1 and path not in self.skip:
+            if self.count_trivial and len(self.files[self._real(path)]) <= 1 and self._real(path) not in self.skip:
                 self.trivial_files += 1
                 self.trivial_bytes += self.cluster_size
                 continue
             yield self._info(path)
 
     def get_file(self, path: str) -> Optional[FileInfo]:
-        return self._info(path) if path in self.files else None
+        return self._info(path) if self._real(path) in self.files else None
 
     def move_clusters(self, path: str, vcn: int, lcn: int, count: int) -> None:
+        path = self._real(path)
         if path in self.fail_paths:
             raise MoveError("acesso negado (simulado)")
         lcns = self.files.get(path)

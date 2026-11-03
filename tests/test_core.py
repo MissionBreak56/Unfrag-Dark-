@@ -297,3 +297,59 @@ def test_trivial_files_are_counted_without_changing_results():
     assert rb.fragmented_files == ra.fragmented_files
     assert abs(rb.fragmentation_percent - ra.fragmentation_percent) < 1e-9
     assert Engine(b).analyze().seconds >= 0
+
+
+# ---- regressão: "intervalo já livre" ----------------------------------------
+def test_hard_links_do_not_break_free_map():
+    vol = FakeVolume(2000)
+    vol.add_file("C:\\real.dll", [10, 11, 50, 51, 90])
+    for i in range(5):
+        vol.add_hardlink("C:\\WinSxS\\link%d.dll" % i, "C:\\real.dll")
+    vol.add_file("C:\\other.bin", [12, 13, 14])
+    eng = Engine(vol)
+    rep = eng.defragment(Options())
+    assert not rep.failed
+    assert eng.hardlinks == 5
+    assert rep.after.files == 2  # o arquivo com 6 nomes conta uma vez
+    assert vol.get_file("C:\\real.dll").fragments == 1
+    # o mapa livre do motor bate com a realidade
+    assert eng.free.runs() == FreeMap.from_bitmap(vol.read_bitmap(), vol.total_clusters).runs()
+    vol.check_invariants()
+
+
+def test_stale_state_is_tolerated_not_fatal():
+    from unfrag.engine import Report
+
+    vol = FakeVolume.demo(seed=2)
+    eng = Engine(vol)
+    eng.analyze()
+    frag = [f for f in eng.files.values() if f.movable and f.fragments > 1]
+    # outro programa move 3 desses arquivos depois da análise
+    for f in frag[:3]:
+        vol.move_clusters(f.path, 0, vol.free_clusters()[-f.clusters], f.clusters)
+    eng.free = FreeMap.from_bitmap(vol.read_bitmap(), vol.total_clusters)
+    rep = Report(mode="defrag")
+    eng._defrag_pass(Options(), rep)  # usa self.files desatualizado: não pode lançar exceção
+    vol.check_invariants()
+    assert eng.free.runs() == FreeMap.from_bitmap(vol.read_bitmap(), vol.total_clusters).runs()
+    assert any("mudou" in why for _, why in rep.skipped)
+
+
+def test_inconsistent_free_map_triggers_resync_instead_of_crash():
+    from unfrag.engine import Report
+
+    vol = FakeVolume(500)
+    vol.add_file("C:\\a", [0, 1, 5, 6])
+    eng = Engine(vol)
+    eng.analyze()
+    eng.free.release(0, 2)  # o mapa local passa a achar que clusters EM USO estão livres
+    rep = Report(mode="defrag")
+    eng._defrag_pass(Options(), rep)  # antes: ValueError "intervalo já livre"
+    # o destino errado é recusado pelo volume, a falha é registrada e o estado é relido
+    assert len(rep.failed) == 1
+    assert eng.free.runs() == FreeMap.from_bitmap(vol.read_bitmap(), vol.total_clusters).runs()
+    rep2 = Report(mode="defrag")
+    eng._defrag_pass(Options(), rep2)  # com o mapa já corrigido, funciona
+    assert not rep2.failed and vol.get_file("C:\\a").fragments == 1
+    assert eng.free.runs() == FreeMap.from_bitmap(vol.read_bitmap(), vol.total_clusters).runs()
+    vol.check_invariants()
