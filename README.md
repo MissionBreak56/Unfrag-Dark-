@@ -47,7 +47,7 @@ nunca são tocados.
 
 ## Instalação e uso
 
-Requer Windows 10/11 e Python 3.9+ (ou use o `.exe` gerado pelo CI em *Actions → build → Artifacts*).
+Requer Windows 10/11 e Python 3.10+ (ou use o `.exe` gerado pelo CI em *Actions → build → Artifacts*).
 
 ```bat
 pip install .

@@ -7,7 +7,7 @@ name = "unfrag-dark"
 version = "0.1.0"
 description = "Desfragmentador NTFS de código aberto com tema escuro"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 classifiers = [
   "Operating System :: Microsoft :: Windows",

@@ -3,8 +3,12 @@ name: build
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   test:
@@ -12,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.9", "3.12"]
+        python: ["3.10", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -41,3 +45,23 @@ jobs:
         with:
           name: UnfragDark-windows
           path: dist/*.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows-exe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: UnfragDark-windows
+          path: dist
+      - name: Checksums
+        run: cd dist && sha256sum *.exe > SHA256SUMS.txt
+      - name: Publicar release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "Unfrag Dark ${{ github.ref_name }}" \
+            --notes "Primeira versão. UnfragDark.exe (interface gráfica escura) e unfrag.exe (linha de comando). Ambos pedem execução como Administrador. O backend Windows ainda não foi validado em hardware real: faça backup e comece por 'unfrag analyze C:'. Use '--demo' para testar sem tocar em discos."
