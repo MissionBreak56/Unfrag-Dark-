@@ -13,7 +13,7 @@ from . import __version__, diskmap, scheduler
 from .backends import IS_WINDOWS, list_drives, open_volume
 from .engine import Cancelled, Engine, Options, Report, SsdSkipped
 from .model import AnalysisResult, DriveInfo
-from .system import fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
+from .system import MAX_THREADS, auto_threads, fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
 
 C = dict(bg="#101216", panel="#171a20", panel2="#1f232b", line="#2a2f39", fg="#e7e9ee",
          muted="#8d94a5", accent="#4c8dff", accent2="#3a6fd0", ok="#3ecf8e", warn="#f5a524",
@@ -259,6 +259,7 @@ class App:
         self.v_large = tk.IntVar(value=s.get("move_large_mb", 0))
         self.v_exts = tk.StringVar(value=s.get("move_exts", ""))
         self.v_minfrag = tk.DoubleVar(value=s.get("min_frag", 0.0))
+        self.v_threads = tk.IntVar(value=s.get("threads", 0))
         self.v_exclude = tk.StringVar(value=s.get("exclude", ""))
         self.v_path = tk.StringVar(value="")
         self.v_status = tk.StringVar(value="Pronto.")
@@ -432,6 +433,13 @@ class App:
         note("Se o disco estiver menos fragmentado que este valor, nada é feito. Evita gastar tempo e "
              "desgaste do disco sem necessidade. 0 = sempre desfragmentar. (Não vale para o modo Espaço livre.)")
 
+        title("Threads de leitura na análise (0 = automático)")
+        ttk.Spinbox(f, from_=0, to=MAX_THREADS, increment=1, textvariable=self.v_threads, width=10).grid(row=r, column=0, sticky="w", pady=(2, 2))
+        r += 1
+        note("Quantos arquivos são lidos ao mesmo tempo durante a análise. Mais threads aceleram em SSD/NVMe; "
+             "em HDD, valores altos podem deixar a leitura mais lenta por causa do movimento da cabeça. "
+             "0 = automático (neste PC: %d). Máximo: %d." % (auto_threads(), MAX_THREADS))
+
         title("Não executar se estes programas estiverem abertos")
         ttk.Entry(f, textvariable=self.v_exclude, width=44).grid(row=r, column=0, sticky="w", pady=(2, 2))
         r += 1
@@ -520,6 +528,13 @@ class App:
         self.tree.configure(selectmode="none" if busy else "browse")
 
     # --- execução ----------------------------------------------------------
+    def _threads(self) -> int:
+        try:
+            n = int(self.v_threads.get() or 0)
+        except (tk.TclError, ValueError):
+            n = 0
+        return max(0, min(MAX_THREADS, n))
+
     def start(self, mode: str, root_path: Optional[str] = None) -> None:
         if self.worker and self.worker.is_alive():
             return
@@ -540,6 +555,7 @@ class App:
                     "Confirmar", "Desfragmentar %s: no modo '%s'?\nFaça backup dos dados importantes antes." % (letter, mode)):
                 return
         self._persist()
+        threads = self._threads()
         path = root_path if root_path is not None else (self.v_path.get().strip() or None)
         opts = Options(mode="defrag" if mode == "analyze" else mode, root=path, recurse=self.v_recurse.get(),
                        move_large_mb=int(self.v_large.get() or 0),
@@ -550,10 +566,10 @@ class App:
         self.progress.configure(value=0, mode="indeterminate")
         self.progress.start(12)
         self._log("== %s %s: ==" % (mode, letter))
-        self.worker = threading.Thread(target=self._work, args=(letter, mode, opts), daemon=True)
+        self.worker = threading.Thread(target=self._work, args=(letter, mode, opts, threads), daemon=True)
         self.worker.start()
 
-    def _work(self, letter: str, mode: str, opts: Options) -> None:
+    def _work(self, letter: str, mode: str, opts: Options, threads: int = 0) -> None:
         def prog(phase, done, total, msg):
             self.q.put(("progress", phase, done, total, msg))
         try:
@@ -561,6 +577,7 @@ class App:
         except Exception as exc:
             self.q.put(("error", "Não foi possível abrir %s: (%s)" % (letter, exc)))
             return
+        vol.threads = threads
         try:
             eng = Engine(vol, progress=prog, cancel=self.cancel)
             self.engine = eng
@@ -731,9 +748,13 @@ class App:
         if not letter:
             return
         if action == "create":
+            extra = []
+            if self.v_large.get():
+                extra.append("--move-large %d" % self.v_large.get())
+            if self._threads():
+                extra.append("--threads %d" % self._threads())
             args = scheduler.build_create_args(letter, self.v_sched_mode.get(), self.v_sched_freq.get(),
-                                               self.v_sched_time.get(),
-                                               ("--move-large %d" % self.v_large.get()) if self.v_large.get() else "")
+                                               self.v_sched_time.get(), " ".join(extra))
         else:
             args = scheduler.build_delete_args(letter, self.v_sched_freq.get())
         if not IS_WINDOWS:
@@ -750,7 +771,8 @@ class App:
     def _persist(self) -> None:
         save_settings(dict(force_ssd=self.v_force_ssd.get(), skip_battery=self.v_battery.get(),
                            move_large_mb=int(self.v_large.get() or 0), move_exts=self.v_exts.get(),
-                           min_frag=float(self.v_minfrag.get() or 0), exclude=self.v_exclude.get()))
+                           min_frag=float(self.v_minfrag.get() or 0), exclude=self.v_exclude.get(),
+                           threads=self._threads()))
 
     def on_close(self) -> None:
         self.cancel.set()

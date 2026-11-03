@@ -353,3 +353,25 @@ def test_inconsistent_free_map_triggers_resync_instead_of_crash():
     assert not rep2.failed and vol.get_file("C:\\a").fragments == 1
     assert eng.free.runs() == FreeMap.from_bitmap(vol.read_bitmap(), vol.total_clusters).runs()
     vol.check_invariants()
+
+
+# ---- threads de leitura ----------------------------------------------------
+def test_resolve_threads_explicit_env_auto_and_clamp(monkeypatch):
+    from unfrag.system import MAX_THREADS, auto_threads, resolve_threads
+    monkeypatch.delenv("UNFRAG_THREADS", raising=False)
+    assert resolve_threads(0) == auto_threads()
+    assert resolve_threads(3) == 3
+    assert resolve_threads(10_000) == MAX_THREADS
+    assert resolve_threads(-5) == auto_threads()
+    monkeypatch.setenv("UNFRAG_THREADS", "5")
+    assert resolve_threads(0) == 5
+    assert resolve_threads(2) == 2  # o valor explícito vence a variável de ambiente
+    monkeypatch.setenv("UNFRAG_THREADS", "abc")
+    assert resolve_threads(0) == auto_threads()
+
+
+def test_cli_threads_option(capsys):
+    assert main(["--demo", "analyze", "C:", "--threads", "4"]) == 0
+    assert "Fragmentação" in capsys.readouterr().out
+    assert main(["schedule", "create", "C:", "--threads", "4", "--dry-run"]) == 0
+    assert "--threads 4" in capsys.readouterr().out

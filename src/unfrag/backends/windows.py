@@ -22,6 +22,7 @@ if sys.platform != "win32":  # pragma: no cover
 
 from ..model import DriveInfo, Extent, FileInfo
 from ..scan import parallel_scan
+from ..system import resolve_threads
 from .base import MoveError, VolumeBackend
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -332,7 +333,7 @@ class WindowsVolume(VolumeBackend):
             if info:
                 yield info
             return
-        workers = int(os.environ.get("UNFRAG_THREADS", 0)) or min(16, (os.cpu_count() or 4) * 2)
+        workers = resolve_threads(self.threads)
         yield from parallel_scan(self._walk(root, recurse), lambda t: self._scan(*t), workers=workers)
 
     # --- mover -------------------------------------------------------------

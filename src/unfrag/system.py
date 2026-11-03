@@ -8,6 +8,26 @@ import sys
 from typing import Iterable, Optional
 
 IS_WINDOWS = sys.platform == "win32"
+MAX_THREADS = 64
+
+
+def auto_threads() -> int:
+    """Número automático de threads de leitura: 2 por núcleo, até 16."""
+    return min(16, (os.cpu_count() or 4) * 2)
+
+
+def resolve_threads(requested: int = 0) -> int:
+    """Threads de leitura a usar. `requested` > 0 vence; 0 = automático
+    (ou a variável de ambiente UNFRAG_THREADS, se definida). Limitado a 1..MAX_THREADS."""
+    n = int(requested or 0)
+    if n <= 0:
+        try:
+            n = int(os.environ.get("UNFRAG_THREADS", 0))
+        except ValueError:
+            n = 0
+    if n <= 0:
+        n = auto_threads()
+    return max(1, min(MAX_THREADS, n))
 
 
 def guard_reason(skip_on_battery: bool = False, exclude_processes: Iterable[str] = ()) -> Optional[str]:

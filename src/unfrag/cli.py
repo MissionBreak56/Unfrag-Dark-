@@ -10,7 +10,7 @@ from . import __version__
 from .backends import IS_WINDOWS, list_drives, open_volume
 from .engine import Engine, Options, Report, SsdSkipped
 from .model import AnalysisResult
-from .system import fmt_bytes, guard_reason, shutdown_soon
+from .system import MAX_THREADS, auto_threads, fmt_bytes, guard_reason, shutdown_soon
 
 PHASES = {"scan": "Analisando", "defrag": "Desfragmentando", "compact": "Compactando espaço livre",
           "toend": "Movendo arquivos grandes para o fim"}
@@ -70,7 +70,9 @@ def cmd_list(args) -> int:
 
 def _open(args):
     letter = args.drive
-    return open_volume(letter, demo=args.demo, delay=0.0)
+    vol = open_volume(letter, demo=args.demo, delay=0.0)
+    vol.threads = getattr(args, "threads", 0) or 0
+    return vol
 
 
 def cmd_analyze(args) -> int:
@@ -116,7 +118,12 @@ def cmd_defrag(args) -> int:
 def cmd_schedule(args) -> int:
     from . import scheduler
     if args.action == "create":
-        extra = "--move-large %d" % args.move_large if args.move_large else ""
+        parts = []
+        if args.move_large:
+            parts.append("--move-large %d" % args.move_large)
+        if args.threads:
+            parts.append("--threads %d" % args.threads)
+        extra = " ".join(parts)
         argv = scheduler.build_create_args(args.drive, args.mode, args.frequency, args.time, extra)
     else:
         argv = scheduler.build_delete_args(args.drive, args.frequency)
@@ -132,6 +139,12 @@ def cmd_gui(args) -> int:
     return run_gui(demo=args.demo)
 
 
+def _threads_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--threads", type=int, default=0, metavar="N",
+                        help="threads de leitura na análise, 1-%d (0 = automático: %d neste PC)"
+                        % (MAX_THREADS, auto_threads()))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="unfrag", description="Unfrag Dark - desfragmentador NTFS com tema escuro.")
     p.add_argument("--version", action="version", version="unfrag-dark " + __version__)
@@ -145,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("drive", help="unidade, ex.: C:")
     a.add_argument("--path", help="analisa só uma pasta ou arquivo")
     a.add_argument("--no-recurse", action="store_true")
+    _threads_arg(a)
     a.set_defaults(fn=cmd_analyze)
 
     d = sub.add_parser("defrag", help="desfragmenta")
@@ -163,6 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--exclude", action="append", metavar="PROC.EXE",
                    help="não executa se este processo estiver rodando (repetível)")
     d.add_argument("--shutdown", action="store_true", help="desliga o PC ao terminar")
+    _threads_arg(d)
     d.set_defaults(fn=cmd_defrag)
 
     s = sub.add_parser("schedule", help="cria/remove tarefa agendada (Windows)")
@@ -172,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--time", default="03:00", help="HH:MM")
     s.add_argument("--mode", choices=["defrag", "quick", "freespace"], default="quick")
     s.add_argument("--move-large", type=int, default=0)
+    _threads_arg(s)
     s.add_argument("--dry-run", action="store_true", help="só mostra o comando do schtasks")
     s.set_defaults(fn=cmd_schedule)
     return p

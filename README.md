@@ -26,6 +26,7 @@ Foi inspirado, em termos de *funcionalidades*, em desfragmentadores clássicos p
 | Mapa de disco colorido (livre / em uso / fragmentado / não movível) | ✔ | — |
 | Lista de arquivos fragmentados (ordenável) | ✔ | — |
 | Proteção para SSD (ignora, a menos que forçado) | ✔ | `--force-ssd` |
+| Threads de leitura da análise (1–64, 0 = automático) | Opções | `--threads N` |
 | Só executar se a fragmentação for ≥ X% | ✔ | `--min-frag 10` |
 | Não executar na bateria / se certos processos estiverem rodando | ✔ | `--skip-battery` / `--exclude app.exe` |
 | Desligar o PC ao terminar | ✔ | `--shutdown` |
@@ -72,7 +73,7 @@ unfrag --demo defrag C: --mode freespace
 
 ## Velocidade da análise
 
-* Os arquivos são lidos em **várias threads** (`UNFRAG_THREADS=N` para ajustar; padrão: 2 por núcleo, até 16) —
+* Os arquivos são lidos em **várias threads** (escolha em *Opções → Threads de leitura*, `--threads N` na CLI ou `UNFRAG_THREADS=N`; padrão automático: 2 por núcleo, até 16) —
   a espera pelo disco libera o GIL, então a leitura de extents é paralela.
 * Arquivos que cabem em **1 cluster não podem fragmentar** e são apenas contados, sem abrir o arquivo.
 * O mapa de clusters livres é interpretado por blocos homogêneos (≈10× mais rápido que bit a bit).

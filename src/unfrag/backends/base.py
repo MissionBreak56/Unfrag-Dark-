@@ -18,6 +18,8 @@ class VolumeBackend(ABC):
     # sem abri-los (muito mais rápido) em vez de devolvê-los em iter_files
     trivial_files: int = 0
     trivial_bytes: int = 0
+    # threads de leitura na análise (0 = automático); só o backend do Windows usa
+    threads: int = 0
 
     @property
     def is_ssd(self) -> Optional[bool]:
