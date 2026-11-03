@@ -1,5 +1,7 @@
 # Unfrag Dark
 
+<img src="docs/icon.png" width="96" align="right" alt="Ícone do Unfrag Dark">
+
 Desfragmentador de disco **NTFS** para Windows, de código aberto, com **tema escuro**.
 Projeto independente, escrito do zero em Python (sem código, nome, ícones ou textos de terceiros).
 Foi inspirado, em termos de *funcionalidades*, em desfragmentadores clássicos para PC.

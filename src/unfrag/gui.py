@@ -89,6 +89,89 @@ def apply_theme(root: tk.Tk) -> None:
     s.configure("TSeparator", background=C["line"])
 
 
+MODE_HELP = {
+    "analyze": ("Analisar",
+                "Só lê o disco e mostra a fragmentação, o mapa e a lista de arquivos fragmentados. "
+                "Não altera nada: pode rodar sem risco, e é o melhor primeiro passo."),
+    "defrag": ("Desfragmentar",
+               "Desfragmentação completa. Cada arquivo fragmentado é regravado em um único trecho "
+               "contínuo de espaço livre, dos menores para os maiores. Deixa os arquivos inteiros, "
+               "mas não reorganiza o espaço livre. Demora mais em discos grandes e cheios."),
+    "quick": ("Rápida",
+              "Igual à completa, porém só mexe em arquivos de até 256 MB e não consolida o espaço "
+              "livre. Termina bem mais depressa; ideal para a manutenção do dia a dia ou agendada."),
+    "freespace": ("Espaço livre",
+                  "Faz a desfragmentação completa e depois puxa arquivos do fim do disco para os "
+                  "buracos do início (até 4 passadas), juntando o espaço livre em um grande bloco no "
+                  "final. Assim os próximos arquivos já são gravados sem fragmentar. É o mais "
+                  "demorado e move muitos arquivos."),
+}
+
+
+def resource_path(name: str) -> str:
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return os.path.join(base, "unfrag", "assets", name)
+    return os.path.join(os.path.dirname(__file__), "assets", name)
+
+
+def set_app_icon(root: tk.Tk) -> None:
+    try:
+        if IS_WINDOWS:
+            root.iconbitmap(default=resource_path("icon.ico"))
+        else:
+            root._icon_img = tk.PhotoImage(file=resource_path("icon.png"))  # mantém referência
+            root.iconphoto(True, root._icon_img)
+    except Exception:
+        pass
+
+
+class ToolTip:
+    """Dica escura que aparece ao passar o mouse sobre um widget."""
+
+    def __init__(self, widget, title: str, text: str, delay: int = 350):
+        self.widget, self.title, self.text, self.delay = widget, title, text, delay
+        self.tip = None
+        self._job = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _e=None) -> None:
+        self._cancel()
+        self._job = self.widget.after(self.delay, self._show)
+
+    def _cancel(self) -> None:
+        if self._job:
+            self.widget.after_cancel(self._job)
+            self._job = None
+
+    def _show(self) -> None:
+        if self.tip:
+            return
+        x = self.widget.winfo_rootx()
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self.tip = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.configure(bg=C["line"])
+        box = tk.Frame(tw, bg=C["panel2"], padx=12, pady=9)
+        box.pack(padx=1, pady=1)
+        tk.Label(box, text=self.title, bg=C["panel2"], fg=C["fg"], font=("Segoe UI Semibold", 10),
+                 anchor="w").pack(fill="x")
+        tk.Label(box, text=self.text, bg=C["panel2"], fg=C["muted"], justify="left", wraplength=340,
+                 anchor="w", font=FONT).pack(fill="x", pady=(3, 0))
+        tw.update_idletasks()
+        sw = self.widget.winfo_screenwidth()
+        x = max(4, min(x, sw - tw.winfo_reqwidth() - 8))
+        tw.wm_geometry("+%d+%d" % (x, y))
+
+    def _hide(self, _e=None) -> None:
+        self._cancel()
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+
 class ScrollFrame(ttk.Frame):
     """Área rolável: use `.inner` como pai dos widgets."""
 
@@ -158,6 +241,7 @@ class App:
         root.geometry("1180x800")
         root.minsize(980, 640)
         apply_theme(root)
+        set_app_icon(root)
         self._vars()
         self._build()
         self.refresh_drives()
@@ -197,6 +281,7 @@ class App:
                                   ("Desfragmentar", "defrag", "Accent.TButton"), ("Analisar", "analyze", "TButton")):
             b = ttk.Button(top, text=text, style=style, command=lambda m=mode: self.start(m))
             b.pack(side="right", padx=(0, 8))
+            ToolTip(b, *MODE_HELP[mode])
             self.btns.append(b)
 
         if IS_WINDOWS and not self.demo:
@@ -304,6 +389,14 @@ class App:
             nonlocal r
             sf.note(f, text, r)
             r += 1
+
+        title("O que cada botão faz")
+        for key in ("analyze", "defrag", "quick", "freespace"):
+            name, text = MODE_HELP[key]
+            sf.note(f, "%s — %s" % (name, text), r, pady=(2, 6))
+            r += 1
+        ttk.Separator(f).grid(row=r, column=0, columnspan=4, sticky="we", pady=(4, 12))
+        r += 1
 
         title("Alvo")
         row = ttk.Frame(f)

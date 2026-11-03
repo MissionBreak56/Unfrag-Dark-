@@ -36,9 +36,9 @@ jobs:
           python-version: "3.12"
       - run: pip install . pyinstaller
       - name: GUI (pede administrador)
-        run: pyinstaller --onefile --windowed --uac-admin --name UnfragDark --paths src launcher.py
+        run: pyinstaller --onefile --windowed --uac-admin --name UnfragDark --icon src/unfrag/assets/icon.ico --add-data "src/unfrag/assets;unfrag/assets" --paths src launcher.py
       - name: CLI
-        run: pyinstaller --onefile --uac-admin --name unfrag --paths src launcher.py
+        run: pyinstaller --onefile --uac-admin --name unfrag --icon src/unfrag/assets/icon.ico --add-data "src/unfrag/assets;unfrag/assets" --paths src launcher.py
       - name: Smoke test do CLI em modo demo
         run: .\dist\unfrag.exe --demo list
       - uses: actions/upload-artifact@v4
