@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from typing import List, Optional
 
 from . import __version__
@@ -16,7 +17,16 @@ PHASES = {"scan": "Analisando", "defrag": "Desfragmentando", "compact": "Compact
           "toend": "Movendo arquivos grandes para o fim"}
 
 
+_last_progress = [0.0]
+
+
 def _progress(phase: str, done: int, total: int, msg: str) -> None:
+    # escrever no console a cada arquivo é lento: no máximo ~15 atualizações por segundo
+    now = time.monotonic()
+    finished = bool(total) and done >= total
+    if not finished and done and now - _last_progress[0] < 0.07:
+        return
+    _last_progress[0] = now
     label = PHASES.get(phase, phase)
     tail = msg[-48:] if msg else ""
     cnt = "%d/%d" % (done, total) if total else str(done)
@@ -96,7 +106,7 @@ def cmd_defrag(args) -> int:
     exts = [e.strip() for e in (args.move_ext or "").split(",") if e.strip()]
     opts = Options(mode=args.mode, root=args.path, recurse=not args.no_recurse,
                    move_large_mb=args.move_large, move_exts=exts, force_ssd=args.force_ssd,
-                   min_fragmentation=args.min_frag)
+                   min_fragmentation=args.min_frag, full_rescan=args.full_rescan)
     with _open(args) as vol:
         eng = Engine(vol, progress=_progress)
         try:
@@ -177,6 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--exclude", action="append", metavar="PROC.EXE",
                    help="não executa se este processo estiver rodando (repetível)")
     d.add_argument("--shutdown", action="store_true", help="desliga o PC ao terminar")
+    d.add_argument("--full-rescan", action="store_true",
+                   help="ao final, reanalisa o volume inteiro (padrão: relê só os arquivos movidos)")
     _threads_arg(d)
     d.set_defaults(fn=cmd_defrag)
 

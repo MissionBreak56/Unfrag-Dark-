@@ -375,3 +375,70 @@ def test_cli_threads_option(capsys):
     assert "Fragmentação" in capsys.readouterr().out
     assert main(["schedule", "create", "C:", "--threads", "4", "--dry-run"]) == 0
     assert "--threads 4" in capsys.readouterr().out
+
+
+# ---- espaço livre mais rápido ----------------------------------------------
+def _naive_first_fit(runs, size, before=None):
+    for s, n in runs:
+        if before is not None and s >= before:
+            return None
+        if n >= size:
+            return s
+    return None
+
+
+def test_first_fit_with_hints_matches_naive_under_random_mutations():
+    import random
+    from unfrag.freespace import FreeMap
+    rnd = random.Random(7)
+    for _ in range(60):
+        total, pos, runs = 3000, 0, []
+        while pos < total - 50:
+            pos += rnd.randint(1, 30)
+            n = rnd.randint(1, 60)
+            runs.append((pos, n))
+            pos += n
+        fm = FreeMap(runs)
+        for _ in range(250):
+            op = rnd.random()
+            if op < 0.5:
+                size = rnd.choice([1, 2, 3, 5, 8, 13, 40, 100, 300])
+                before = rnd.choice([None, rnd.randint(0, total)])
+                assert fm.first_fit(size, before) == _naive_first_fit(fm.runs(), size, before)
+            elif op < 0.75 and fm.starts:
+                i = rnd.randrange(len(fm.starts))
+                s, n = fm.starts[i], fm.lens[i]
+                k = rnd.randint(1, n)
+                fm.allocate(s + rnd.randint(0, n - k), k)
+            else:
+                try:
+                    fm.release(rnd.randint(0, total), rnd.randint(1, 40))
+                except ValueError:
+                    pass
+
+
+def test_fast_verification_matches_full_rescan():
+    fast_vol, full_vol = FakeVolume.demo(seed=6), FakeVolume.demo(seed=6)
+    fast = Engine(fast_vol).defragment(Options(mode="freespace"))
+    full = Engine(full_vol).defragment(Options(mode="freespace", full_rescan=True))
+    assert fast_vol.owner == full_vol.owner  # mesmas movimentações
+    for field in ("files", "fragmented_files", "fragments", "free_runs", "largest_free_run", "free_clusters"):
+        assert getattr(fast.after, field) == getattr(full.after, field), field
+    assert any("verificação final rápida" in n for n in fast.notes)
+    assert not any("verificação final rápida" in n for n in full.notes)
+
+
+def test_fast_verification_reflects_failed_moves():
+    vol = FakeVolume.demo(seed=2)
+    probe = Engine(vol)
+    probe.analyze()
+    victim = next(p for p, f in probe.files.items() if f.movable and f.fragments > 1)
+    vol.fail_paths.add(victim)
+    rep = Engine(vol).defragment(Options(mode="freespace"))
+    assert rep.failed
+    assert rep.after.fragmented_files == Engine(vol).analyze().fragmented_files
+
+
+def test_cli_full_rescan_flag(capsys):
+    assert main(["--demo", "defrag", "C:", "--mode", "freespace", "--full-rescan"]) in (0, 1)
+    assert "Depois" in capsys.readouterr().out

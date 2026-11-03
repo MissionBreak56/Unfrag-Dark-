@@ -21,6 +21,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from .backends.base import MoveError, VolumeBackend
 from .freespace import FreeMap
 from .model import AnalysisResult, Extent, FileInfo
+from .scan import parallel_scan
+from .system import resolve_threads
 
 ProgressFn = Callable[[str, int, int, str], None]
 MIB = 1 << 20
@@ -52,6 +54,9 @@ class Options:
     force_ssd: bool = False
     min_fragmentation: float = 0.0
     verify: bool = True
+    # False: a verificação final relê só o mapa livre e os arquivos movidos (rápido);
+    # True: reanalisa o volume inteiro (lento, mas pega mudanças feitas por outros programas)
+    full_rescan: bool = False
 
 
 @dataclass
@@ -84,6 +89,7 @@ class Engine:
         self.trivial_files = 0
         self.trivial_bytes = 0
         self.hardlinks = 0
+        self._touched: set = set()  # arquivos movidos (ou que falharam) desde a última análise
 
     # --- utilidades --------------------------------------------------------
     def _emit(self, phase: str, done: int, total: int, msg: str = "") -> None:
@@ -100,6 +106,7 @@ class Engine:
         self.files = {}
         self.trivial_files = self.trivial_bytes = 0
         self.hardlinks = 0
+        self._touched = set()
         seen = set()
         self._emit("scan", 0, 0, "lendo o mapa de clusters…")
         bitmap = self.backend.read_bitmap()
@@ -170,10 +177,39 @@ class Engine:
         if report.cancelled or not opts.verify:
             self.result = self._summarize()
             report.after = self.result
-        else:
+        elif opts.full_rescan or not self._touched:
             report.after = self.analyze(opts.root, opts.recurse)
+        else:
+            report.after = self._verify_touched(report)
         report.seconds = time.time() - t0
         return report
+
+    def _verify_touched(self, report: Report) -> AnalysisResult:
+        """Verificação final rápida: relê o mapa de clusters livres e SÓ os arquivos que foram
+        movidos, em vez de reanalisar o volume inteiro."""
+        t0 = time.time()
+        paths = sorted(self._touched)
+        self._emit("scan", 0, len(paths), "verificando os arquivos movidos…")
+        self.free = FreeMap.from_bitmap(self.backend.read_bitmap(), self.backend.total_clusters)
+
+        def fetch(p: str):
+            return (p, self.backend.get_file(p))
+
+        workers = resolve_threads(getattr(self.backend, "threads", 0))
+        for i, (p, info) in enumerate(parallel_scan(paths, fetch, workers=workers)):
+            if info is None:
+                self.files.pop(p, None)
+            else:
+                self.files[p] = info
+            if i % 200 == 0:
+                self._check_cancel()
+                self._emit("scan", i, len(paths), p)
+        self._emit("scan", len(paths), len(paths), "")
+        self.result = self._summarize()
+        self.result.seconds = time.time() - t0
+        report.notes.append("verificação final rápida: o mapa livre e os %d arquivos movidos foram relidos "
+                            "(use a reanálise completa para reler o volume inteiro)" % len(paths))
+        return self.result
 
     def _defrag_pass(self, opts: Options, report: Report) -> None:
         cands = [f for f in self.files.values() if f.movable and f.fragments > 1]
@@ -208,6 +244,8 @@ class Engine:
             for i, f in enumerate(cands):
                 self._check_cancel()
                 self._emit("compact", i, len(cands), f.path)
+                if not self.free.starts or self.free.starts[0] >= f.start_lcn:
+                    break  # não há mais buracos antes deste arquivo (nem dos próximos, que ficam antes)
                 target = self.free.first_fit(f.clusters, before=f.start_lcn)
                 if target is None:
                     continue
@@ -253,6 +291,7 @@ class Engine:
         except (MoveError, OSError) as exc:
             report.failed.append((f.path, str(exc)))
             self._resync(f.path)
+            self._touched.add(f.path)
             return False
         try:
             for s, n in old:
@@ -263,6 +302,7 @@ class Engine:
             # o mapa local divergiu da realidade: o arquivo FOI movido, então só relê tudo
             self._resync(f.path)
         report.clusters_moved += clusters
+        self._touched.add(f.path)
         return True
 
     def _resync(self, path: str) -> None:

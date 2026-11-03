@@ -260,6 +260,7 @@ class App:
         self.v_exts = tk.StringVar(value=s.get("move_exts", ""))
         self.v_minfrag = tk.DoubleVar(value=s.get("min_frag", 0.0))
         self.v_threads = tk.IntVar(value=s.get("threads", 0))
+        self.v_fullscan = tk.BooleanVar(value=s.get("full_rescan", False))
         self.v_exclude = tk.StringVar(value=s.get("exclude", ""))
         self.v_path = tk.StringVar(value="")
         self.v_status = tk.StringVar(value="Pronto.")
@@ -456,6 +457,12 @@ class App:
         note("Por padrão, SSDs são ignorados: não têm cabeça mecânica, não ganham desempenho e a reescrita "
              "só gasta a vida útil. Marque apenas se souber o que está fazendo.")
 
+        ttk.Checkbutton(f, text="Reanálise completa ao final (mais lenta)", variable=self.v_fullscan).grid(row=r, column=0, columnspan=4, sticky="w")
+        r += 1
+        note("Por padrão, ao terminar o programa relê só o mapa de espaço livre e os arquivos que moveu, "
+             "o que poupa muito tempo em discos grandes. Marque para reanalisar o volume inteiro no final "
+             "(útil se outros programas estiverem alterando arquivos ao mesmo tempo).")
+
         ttk.Checkbutton(f, text="Desligar o computador ao terminar", variable=self.v_shutdown).grid(row=r, column=0, columnspan=4, sticky="w")
         r += 1
         note("Desliga o PC 60 segundos depois que a operação terminar com sucesso (não desliga se você "
@@ -560,7 +567,8 @@ class App:
         opts = Options(mode="defrag" if mode == "analyze" else mode, root=path, recurse=self.v_recurse.get(),
                        move_large_mb=int(self.v_large.get() or 0),
                        move_exts=[e.strip() for e in self.v_exts.get().split(",") if e.strip()],
-                       force_ssd=self.v_force_ssd.get(), min_fragmentation=float(self.v_minfrag.get() or 0))
+                       force_ssd=self.v_force_ssd.get(), min_fragmentation=float(self.v_minfrag.get() or 0),
+                       full_rescan=self.v_fullscan.get())
         self.cancel.clear()
         self._set_busy(True)
         self.progress.configure(value=0, mode="indeterminate")
@@ -772,7 +780,7 @@ class App:
         save_settings(dict(force_ssd=self.v_force_ssd.get(), skip_battery=self.v_battery.get(),
                            move_large_mb=int(self.v_large.get() or 0), move_exts=self.v_exts.get(),
                            min_frag=float(self.v_minfrag.get() or 0), exclude=self.v_exclude.get(),
-                           threads=self._threads()))
+                           threads=self._threads(), full_rescan=self.v_fullscan.get()))
 
     def on_close(self) -> None:
         self.cancel.set()
