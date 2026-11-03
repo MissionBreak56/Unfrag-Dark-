@@ -89,6 +89,59 @@ def apply_theme(root: tk.Tk) -> None:
     s.configure("TSeparator", background=C["line"])
 
 
+class ScrollFrame(ttk.Frame):
+    """Área rolável: use `.inner` como pai dos widgets."""
+
+    def __init__(self, parent, bg=None):
+        super().__init__(parent)
+        bg = bg or C["bg"]
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vbar.set)
+        self.vbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = ttk.Frame(self.canvas)
+        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", self._on_canvas)
+        for w in (self.canvas, self.inner):
+            w.bind("<Enter>", self._bind_wheel)
+            w.bind("<Leave>", self._unbind_wheel)
+        self.wrap_widgets = []
+
+    def _on_canvas(self, e) -> None:
+        self.canvas.itemconfigure(self._win, width=e.width)
+        for lbl in self.wrap_widgets:
+            lbl.configure(wraplength=max(200, e.width - 40))
+
+    def _bind_wheel(self, _e=None) -> None:
+        self.canvas.bind_all("<MouseWheel>", self._wheel)
+        self.canvas.bind_all("<Button-4>", self._wheel)
+        self.canvas.bind_all("<Button-5>", self._wheel)
+
+    def _unbind_wheel(self, _e=None) -> None:
+        self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
+
+    def _wheel(self, e) -> None:
+        if self.inner.winfo_reqheight() <= self.canvas.winfo_height():
+            return
+        if getattr(e, "num", 0) == 4:
+            step = -1
+        elif getattr(e, "num", 0) == 5:
+            step = 1
+        else:
+            step = -1 if e.delta > 0 else 1
+        self.canvas.yview_scroll(step * 2, "units")
+
+    def note(self, parent, text: str, row: int, column: int = 0, columnspan: int = 4, pady=(0, 10)) -> None:
+        """Texto explicativo (cinza, quebra de linha automática)."""
+        lbl = ttk.Label(parent, text=text, style="Muted.TLabel", justify="left", wraplength=620)
+        lbl.grid(row=row, column=column, columnspan=columnspan, sticky="w", pady=pady)
+        self.wrap_widgets.append(lbl)
+
+
 class App:
     def __init__(self, root: tk.Tk, demo: bool = False):
         self.root = root
@@ -102,7 +155,7 @@ class App:
         self.settings = load_settings()
 
         root.title("Unfrag Dark %s%s" % (__version__, "  [DEMO - discos simulados]" if self.demo else ""))
-        root.geometry("1180x760")
+        root.geometry("1180x800")
         root.minsize(980, 640)
         apply_theme(root)
         self._vars()
@@ -157,13 +210,13 @@ class App:
         paned.pack(fill="both", expand=True, padx=14, pady=(0, 8))
 
         left = ttk.Frame(paned, style="Panel.TFrame")
-        paned.add(left, weight=2)
+        paned.add(left, weight=1)
         ttk.Label(left, text="UNIDADES", style="Panel.TLabel", foreground=C["muted"],
                   font=("Segoe UI Semibold", 8)).pack(anchor="w", padx=12, pady=(10, 4))
         cols = ("drive", "label", "kind", "size", "free")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse", height=8)
-        for c, t, w in (("drive", "Un.", 46), ("label", "Nome", 110), ("kind", "Tipo", 70),
-                        ("size", "Tamanho", 80), ("free", "Livre", 70)):
+        for c, t, w in (("drive", "Un.", 40), ("label", "Nome", 84), ("kind", "Tipo", 62),
+                        ("size", "Tamanho", 86), ("free", "Livre", 86)):
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor="w")
         self.tree.pack(fill="both", expand=True, padx=6, pady=(0, 8))
@@ -171,7 +224,7 @@ class App:
         ttk.Button(left, text="Atualizar lista", command=self.refresh_drives).pack(padx=8, pady=(0, 10), anchor="w")
 
         right = ttk.Frame(paned)
-        paned.add(right, weight=5)
+        paned.add(right, weight=4)
 
         card = ttk.Frame(right, style="Panel.TFrame", padding=12)
         card.pack(fill="x")
@@ -187,7 +240,7 @@ class App:
 
         mapbox = ttk.Frame(right, style="Panel.TFrame", padding=(12, 8))
         mapbox.pack(fill="both", expand=True, pady=(8, 0))
-        self.canvas = tk.Canvas(mapbox, bg=C["panel"], highlightthickness=0, height=230)
+        self.canvas = tk.Canvas(mapbox, bg=C["panel"], highlightthickness=0, height=150)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda e: self._draw_map())
         legend = ttk.Frame(mapbox, style="Panel.TFrame")
@@ -235,41 +288,104 @@ class App:
         self._sort_state = ("frags", True)
 
     def _tab_options(self) -> None:
-        f = ttk.Frame(self.nb, padding=14)
-        self.nb.add(f, text="Opções")
-        ttk.Label(f, text="Alvo (vazio = unidade inteira)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(f, textvariable=self.v_path, width=48).grid(row=0, column=1, sticky="we", padx=8)
-        ttk.Button(f, text="Pasta…", command=self._pick_folder).grid(row=0, column=2)
-        ttk.Button(f, text="Arquivo…", command=self._pick_file).grid(row=0, column=3, padx=(6, 0))
-        ttk.Checkbutton(f, text="Incluir subpastas", variable=self.v_recurse).grid(row=1, column=1, sticky="w", padx=8, pady=6)
-        ttk.Label(f, text="Mover arquivos maiores que (MB, 0 = não)").grid(row=2, column=0, sticky="w")
-        ttk.Spinbox(f, from_=0, to=100000, textvariable=self.v_large, width=10).grid(row=2, column=1, sticky="w", padx=8, pady=4)
-        ttk.Label(f, text="Mover extensões para o fim (ex.: .iso,.vhdx)").grid(row=3, column=0, sticky="w")
-        ttk.Entry(f, textvariable=self.v_exts, width=30).grid(row=3, column=1, sticky="w", padx=8, pady=4)
-        ttk.Label(f, text="Só desfragmentar se fragmentação ≥ (%)").grid(row=4, column=0, sticky="w")
-        ttk.Spinbox(f, from_=0, to=100, increment=1, textvariable=self.v_minfrag, width=10).grid(row=4, column=1, sticky="w", padx=8, pady=4)
-        ttk.Label(f, text="Não executar se estes processos rodarem").grid(row=5, column=0, sticky="w")
-        ttk.Entry(f, textvariable=self.v_exclude, width=40).grid(row=5, column=1, sticky="w", padx=8, pady=4)
-        ttk.Checkbutton(f, text="Não executar na bateria", variable=self.v_battery).grid(row=6, column=1, sticky="w", padx=8)
-        ttk.Checkbutton(f, text="Desfragmentar SSD mesmo assim (não recomendado)", variable=self.v_force_ssd).grid(row=7, column=1, sticky="w", padx=8)
-        ttk.Checkbutton(f, text="Desligar o computador ao terminar", variable=self.v_shutdown).grid(row=8, column=1, sticky="w", padx=8)
-        f.columnconfigure(1, weight=1)
+        sf = ScrollFrame(self.nb)
+        self.nb.add(sf, text="Opções")
+        f = ttk.Frame(sf.inner, padding=(14, 12, 14, 12))
+        f.pack(fill="both", expand=True)
+        f.columnconfigure(0, weight=1)
+        r = 0
+
+        def title(text: str) -> None:
+            nonlocal r
+            ttk.Label(f, text=text, font=("Segoe UI Semibold", 10)).grid(row=r, column=0, columnspan=4, sticky="w")
+            r += 1
+
+        def note(text: str) -> None:
+            nonlocal r
+            sf.note(f, text, r)
+            r += 1
+
+        title("Alvo")
+        row = ttk.Frame(f)
+        row.grid(row=r, column=0, columnspan=4, sticky="we", pady=(2, 2))
+        row.columnconfigure(0, weight=1)
+        ttk.Entry(row, textvariable=self.v_path).grid(row=0, column=0, sticky="we")
+        ttk.Button(row, text="Pasta…", command=self._pick_folder).grid(row=0, column=1, padx=(8, 0))
+        ttk.Button(row, text="Arquivo…", command=self._pick_file).grid(row=0, column=2, padx=(6, 0))
+        r += 1
+        note("Limita a análise/desfragmentação a uma pasta ou a um único arquivo. Deixe vazio para "
+             "trabalhar na unidade inteira. Uma pasta de teste é a forma mais segura de começar.")
+
+        ttk.Checkbutton(f, text="Incluir subpastas", variable=self.v_recurse).grid(row=r, column=0, columnspan=4, sticky="w")
+        r += 1
+        note("Quando o alvo é uma pasta, inclui também tudo o que está dentro das subpastas. "
+             "Desmarcado, só os arquivos da própria pasta são processados.")
+
+        title("Mover arquivos grandes para o fim do disco (MB)")
+        ttk.Spinbox(f, from_=0, to=100000, textvariable=self.v_large, width=10).grid(row=r, column=0, sticky="w", pady=(2, 2))
+        r += 1
+        note("Arquivos com este tamanho ou maiores são empurrados para o final do disco, liberando o início "
+             "(mais rápido em HDD) para arquivos do dia a dia. Use 0 para não mover nada.")
+
+        title("Mover extensões para o fim (ex.: .iso,.vhdx)")
+        ttk.Entry(f, textvariable=self.v_exts, width=34).grid(row=r, column=0, sticky="w", pady=(2, 2))
+        r += 1
+        note("Mesmo efeito da opção acima, mas por tipo de arquivo. Separe as extensões por vírgula. "
+             "Bom para imagens ISO, discos virtuais, backups e vídeos que raramente são usados.")
+
+        title("Só desfragmentar se a fragmentação for pelo menos (%)")
+        ttk.Spinbox(f, from_=0, to=100, increment=1, textvariable=self.v_minfrag, width=10).grid(row=r, column=0, sticky="w", pady=(2, 2))
+        r += 1
+        note("Se o disco estiver menos fragmentado que este valor, nada é feito. Evita gastar tempo e "
+             "desgaste do disco sem necessidade. 0 = sempre desfragmentar. (Não vale para o modo Espaço livre.)")
+
+        title("Não executar se estes programas estiverem abertos")
+        ttk.Entry(f, textvariable=self.v_exclude, width=44).grid(row=r, column=0, sticky="w", pady=(2, 2))
+        r += 1
+        note("Lista separada por vírgula, por exemplo: game.exe, obs64.exe. Se algum deles estiver em "
+             "execução, a operação não começa. Útil para não atrapalhar jogos, gravações ou renderizações.")
+
+        ttk.Checkbutton(f, text="Não executar na bateria", variable=self.v_battery).grid(row=r, column=0, columnspan=4, sticky="w")
+        r += 1
+        note("Em notebooks, cancela o início quando o carregador não está conectado, "
+             "porque desfragmentar consome bastante energia.")
+
+        ttk.Checkbutton(f, text="Desfragmentar SSD mesmo assim (não recomendado)", variable=self.v_force_ssd).grid(row=r, column=0, columnspan=4, sticky="w")
+        r += 1
+        note("Por padrão, SSDs são ignorados: não têm cabeça mecânica, não ganham desempenho e a reescrita "
+             "só gasta a vida útil. Marque apenas se souber o que está fazendo.")
+
+        ttk.Checkbutton(f, text="Desligar o computador ao terminar", variable=self.v_shutdown).grid(row=r, column=0, columnspan=4, sticky="w")
+        r += 1
+        note("Desliga o PC 60 segundos depois que a operação terminar com sucesso (não desliga se você "
+             "clicou em Parar).")
 
     def _tab_schedule(self) -> None:
-        f = ttk.Frame(self.nb, padding=14)
-        self.nb.add(f, text="Agendamento")
-        ttk.Label(f, text="Cria uma tarefa no Agendador do Windows para a unidade selecionada.",
-                  style="Muted.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
-        ttk.Label(f, text="Frequência").grid(row=1, column=0, sticky="w")
-        ttk.Combobox(f, textvariable=self.v_sched_freq, values=list(scheduler.FREQUENCIES), width=10,
-                     state="readonly").grid(row=1, column=1, padx=8, pady=4, sticky="w")
-        ttk.Label(f, text="Horário (HH:MM)").grid(row=2, column=0, sticky="w")
-        ttk.Entry(f, textvariable=self.v_sched_time, width=8).grid(row=2, column=1, padx=8, pady=4, sticky="w")
-        ttk.Label(f, text="Modo").grid(row=3, column=0, sticky="w")
-        ttk.Combobox(f, textvariable=self.v_sched_mode, values=["quick", "defrag", "freespace"], width=10,
-                     state="readonly").grid(row=3, column=1, padx=8, pady=4, sticky="w")
-        ttk.Button(f, text="Criar tarefa", style="Accent.TButton", command=lambda: self._schedule("create")).grid(row=4, column=1, sticky="w", padx=8, pady=10)
-        ttk.Button(f, text="Remover tarefa", command=lambda: self._schedule("delete")).grid(row=4, column=2, sticky="w")
+        sf = ScrollFrame(self.nb)
+        self.nb.add(sf, text="Agendamento")
+        f = ttk.Frame(sf.inner, padding=(14, 12, 14, 12))
+        f.pack(fill="both", expand=True)
+        f.columnconfigure(0, weight=1)
+        sf.note(f, "Cria uma tarefa no Agendador de Tarefas do Windows para a unidade selecionada na lista. "
+                   "Ela roda sozinha com privilégios de administrador e usa as opções da aba Opções "
+                   "(tamanho mínimo para mover ao fim). A tarefa não executa na bateria.", 0)
+        ttk.Label(f, text="Frequência", font=("Segoe UI Semibold", 10)).grid(row=1, column=0, sticky="w")
+        ttk.Combobox(f, textvariable=self.v_sched_freq, values=list(scheduler.FREQUENCIES), width=12,
+                     state="readonly").grid(row=2, column=0, sticky="w", pady=(2, 2))
+        sf.note(f, "Com que frequência a tarefa roda: todo dia, toda semana ou todo mês.", 3)
+        ttk.Label(f, text="Horário (HH:MM)", font=("Segoe UI Semibold", 10)).grid(row=4, column=0, sticky="w")
+        ttk.Entry(f, textvariable=self.v_sched_time, width=8).grid(row=5, column=0, sticky="w", pady=(2, 2))
+        sf.note(f, "Hora do dia no formato 24 h, por exemplo 03:00. Escolha um horário em que o PC esteja ligado e ocioso.", 6)
+        ttk.Label(f, text="Modo", font=("Segoe UI Semibold", 10)).grid(row=7, column=0, sticky="w")
+        ttk.Combobox(f, textvariable=self.v_sched_mode, values=["quick", "defrag", "freespace"], width=12,
+                     state="readonly").grid(row=8, column=0, sticky="w", pady=(2, 2))
+        sf.note(f, "quick = rápida (só arquivos até 256 MB, ideal para o dia a dia); defrag = completa; "
+                   "freespace = completa + consolida o espaço livre (mais demorada).", 9)
+        btns = ttk.Frame(f)
+        btns.grid(row=10, column=0, sticky="w")
+        ttk.Button(btns, text="Criar tarefa", style="Accent.TButton", command=lambda: self._schedule("create")).pack(side="left")
+        ttk.Button(btns, text="Remover tarefa", command=lambda: self._schedule("delete")).pack(side="left", padx=(8, 0))
+        sf.note(f, "Remover apaga a tarefa com a frequência escolhida acima para a unidade selecionada.", 11, pady=(8, 0))
 
     def _tab_log(self) -> None:
         f = ttk.Frame(self.nb, style="Panel.TFrame")

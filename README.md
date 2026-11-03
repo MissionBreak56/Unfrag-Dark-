@@ -6,6 +6,7 @@ Foi inspirado, em termos de *funcionalidades*, em desfragmentadores clássicos p
 
 ![Análise](docs/screenshot-analyze.png)
 ![Depois de desfragmentar](docs/screenshot-defrag.png)
+![Opções com explicações](docs/screenshot-options.png)
 
 > As capturas usam o **modo demo** (volumes simulados), por isso funcionam em qualquer sistema.
 
