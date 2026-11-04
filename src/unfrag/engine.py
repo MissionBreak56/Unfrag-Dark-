@@ -21,7 +21,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from .backends.base import MoveError, VolumeBackend
 from .freespace import FreeMap
 from .model import AnalysisResult, Extent, FileInfo
-from .scan import parallel_scan
+from .scan import gc_paused, parallel_scan
 from .system import resolve_threads
 
 ProgressFn = Callable[[str, int, int, str], None]
@@ -33,7 +33,11 @@ MOVE_CHUNK_CLUSTERS = 32768
 def _signature(f: FileInfo) -> tuple:
     """Posição física do arquivo: dois caminhos com a mesma assinatura são o MESMO arquivo
     (hard links, comuns no Windows, p.ex. em WinSxS)."""
-    return tuple((e.lcn, e.length) for e in sorted(f.extents, key=lambda e: e.vcn) if not e.is_hole)
+    ex = f.extents
+    if len(ex) == 1:  # caso mais comum: evita ordenar e criar gerador
+        e = ex[0]
+        return () if e.lcn < 0 else ((e.lcn, e.length),)
+    return tuple([(e.lcn, e.length) for e in sorted(ex) if e.lcn >= 0])
 
 
 class Cancelled(Exception):
@@ -112,18 +116,20 @@ class Engine:
         bitmap = self.backend.read_bitmap()
         self.free = FreeMap.from_bitmap(bitmap, self.backend.total_clusters)
         n = 0
-        for f in self.backend.iter_files(root, recurse):
-            sig = _signature(f)
-            if sig:
-                if sig in seen:  # hard link: já contado sob outro nome
-                    self.hardlinks += 1
-                    continue
-                seen.add(sig)
-            self.files[f.path] = f
-            n += 1
-            if n % 500 == 0:
-                self._check_cancel()
-                self._emit("scan", n + self.backend.trivial_files, 0, f.path)
+        files = self.files
+        with gc_paused():
+            for f in self.backend.iter_files(root, recurse):
+                sig = _signature(f)
+                if sig:
+                    if sig in seen:  # hard link: já contado sob outro nome
+                        self.hardlinks += 1
+                        continue
+                    seen.add(sig)
+                files[f.path] = f
+                n += 1
+                if n % 500 == 0:
+                    self._check_cancel()
+                    self._emit("scan", n + self.backend.trivial_files, 0, f.path)
         self.trivial_files = self.backend.trivial_files
         self.trivial_bytes = self.backend.trivial_bytes
         total = n + self.trivial_files
@@ -196,14 +202,15 @@ class Engine:
             return (p, self.backend.get_file(p))
 
         workers = resolve_threads(getattr(self.backend, "threads", 0))
-        for i, (p, info) in enumerate(parallel_scan(paths, fetch, workers=workers)):
-            if info is None:
-                self.files.pop(p, None)
-            else:
-                self.files[p] = info
-            if i % 200 == 0:
-                self._check_cancel()
-                self._emit("scan", i, len(paths), p)
+        with gc_paused():
+            for i, (p, info) in enumerate(parallel_scan(paths, fetch, workers=workers)):
+                if info is None:
+                    self.files.pop(p, None)
+                else:
+                    self.files[p] = info
+                if i % 200 == 0:
+                    self._check_cancel()
+                    self._emit("scan", i, len(paths), p)
         self._emit("scan", len(paths), len(paths), "")
         self.result = self._summarize()
         self.result.seconds = time.time() - t0

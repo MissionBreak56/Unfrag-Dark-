@@ -78,6 +78,11 @@ unfrag --demo defrag C: --mode freespace
 * Arquivos que cabem em **1 cluster não podem fragmentar** e são apenas contados, sem abrir o arquivo.
 * O mapa de clusters livres é interpretado por blocos homogêneos (≈10× mais rápido que bit a bit).
 * Buffers reaproveitados por thread e caminhos longos sem `abspath` por arquivo.
+* O coletor de lixo do Python fica **pausado durante a varredura** (milhões de objetos pequenos sem
+  ciclos; o GC os reexaminava várias vezes) e o buffer de extents é decodificado de uma vez
+  (`ntfs.py`), sem copiar o buffer nem fazer um `struct` por extent. Em um benchmark sintético
+  (300 mil arquivos, só CPU em Python, sem E/S) a análise caiu de ~2,7 s para ~1,3 s.
+* Objetos ctypes (buffer, `c_int64`, `DWORD`, `byref`) são reaproveitados por thread.
 * A janela e a CLI mostram o tempo da análise.
 
 ## Segurança — leia antes de usar em disco real

@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 
 
-@dataclass(frozen=True)
-class Extent:
+class Extent(NamedTuple):
     """Um trecho de arquivo: `length` clusters virtuais a partir de `vcn`,
-    gravados a partir do cluster lógico `lcn` (lcn < 0 = buraco/sparse)."""
+    gravados a partir do cluster lógico `lcn` (lcn < 0 = buraco/sparse).
+
+    NamedTuple (imutável, como antes) é bem mais barato de criar e de ordenar do que um
+    dataclass congelado: a análise cria um Extent por trecho de cada arquivo do disco."""
 
     vcn: int
     lcn: int
@@ -27,11 +29,15 @@ class FileInfo:
     skip: Optional[str] = None  # motivo pelo qual o arquivo não pode ser movido
 
     def _ordered(self) -> List[Extent]:
-        return sorted(self.extents, key=lambda e: e.vcn)
+        # vcn é o primeiro campo e é único por arquivo: ordenar a tupla = ordenar por vcn
+        return sorted(self.extents)
 
     @property
     def fragments(self) -> int:
         """Número de pedaços fisicamente separados (extents adjacentes contam como um)."""
+        ex = self.extents
+        if len(ex) == 1:  # caso mais comum: um único trecho
+            return 0 if ex[0].lcn < 0 else 1
         count = 0
         prev_end = None
         for e in self._ordered():
@@ -49,7 +55,10 @@ class FileInfo:
 
     @property
     def has_holes(self) -> bool:
-        return any(e.is_hole for e in self.extents)
+        for e in self.extents:
+            if e.lcn < 0:
+                return True
+        return False
 
     @property
     def start_lcn(self) -> int:

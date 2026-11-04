@@ -21,6 +21,7 @@ if sys.platform != "win32":  # pragma: no cover
     raise ImportError("backend Windows só funciona no Windows")
 
 from ..model import DriveInfo, Extent, FileInfo
+from ..ntfs import parse_retrieval
 from ..scan import parallel_scan
 from ..system import resolve_threads
 from .base import MoveError, VolumeBackend
@@ -156,6 +157,21 @@ def list_drives() -> List[DriveInfo]:
     return drives
 
 
+class _ThreadCtx:
+    """Objetos ctypes reaproveitados por thread: a análise faz uma DeviceIoControl por arquivo,
+    e criar buffer/c_int64/DWORD/byref a cada chamada custa mais que a própria chamada."""
+
+    __slots__ = ("size", "buf", "start", "ret", "start_ref", "ret_ref")
+
+    def __init__(self, size: int):
+        self.size = size
+        self.buf = ctypes.create_string_buffer(size)
+        self.start = ctypes.c_int64(0)
+        self.ret = wt.DWORD(0)
+        self.start_ref = ctypes.byref(self.start)
+        self.ret_ref = ctypes.byref(self.ret)
+
+
 class WindowsVolume(VolumeBackend):
     def __init__(self, letter: str):
         self.letter = letter.rstrip(":\\/").upper()
@@ -205,52 +221,50 @@ class WindowsVolume(VolumeBackend):
             err = ctypes.get_last_error()
             if not ok and err != ERROR_MORE_DATA:
                 raise OSError(err, "FSCTL_GET_VOLUME_BITMAP falhou (erro %d)" % err)
-            starting, bitmap_size = struct.unpack_from("<qq", buf.raw, 0)
+            # lê direto do buffer: `buf.raw` copiaria os 4 MiB inteiros a cada acesso
+            starting, bitmap_size = struct.unpack_from("<qq", buf, 0)
             nbytes = min(ret.value - 16, (bitmap_size + 7) // 8)
-            out += buf.raw[16:16 + nbytes]
+            out += ctypes.string_at(ctypes.addressof(buf) + 16, max(nbytes, 0))
             start = starting + nbytes * 8
             if ok or nbytes <= 0:
                 break
         return bytes(out)
 
     # --- arquivos ----------------------------------------------------------
-    def _buffer(self, size: int):
-        """Buffer reaproveitado por thread (evita alocar e zerar 64 KB a cada arquivo)."""
-        buf = getattr(self._tls, "buf", None)
-        if buf is None or len(buf) < size:
-            buf = self._tls.buf = ctypes.create_string_buffer(size)
-        return buf
+    def _ctx(self) -> _ThreadCtx:
+        ctx = getattr(self._tls, "ctx", None)
+        if ctx is None:
+            ctx = self._tls.ctx = _ThreadCtx(8 * 1024)  # cabe ~500 extents; se faltar, ERROR_MORE_DATA continua o laço
+        return ctx
 
     def _extents(self, h: int) -> List[Extent]:
+        ctx = self._ctx()
+        buf, size, start, ret = ctx.buf, ctx.size, ctx.start, ctx.ret
+        start_ref, ret_ref = ctx.start_ref, ctx.ret_ref
+        ioctl = k32.DeviceIoControl
+        start.value = 0
         extents: List[Extent] = []
-        size = 8 * 1024  # cabe ~500 extents; se faltar, ERROR_MORE_DATA continua o laço
-        buf = self._buffer(size)
-        raw_unpack = struct.unpack_from
-        start_vcn = 0
         while True:
-            inbuf = ctypes.c_int64(start_vcn)
-            ret = wt.DWORD()
-            ok = k32.DeviceIoControl(h, FSCTL_GET_RETRIEVAL_POINTERS, ctypes.byref(inbuf), 8,
-                                     buf, size, ctypes.byref(ret), None)
-            err = ctypes.get_last_error()
-            if not ok and err not in (ERROR_MORE_DATA,):
+            ok = ioctl(h, FSCTL_GET_RETRIEVAL_POINTERS, start_ref, 8, buf, size, ret_ref, None)
+            if ok:
+                err = 0
+            else:
+                err = ctypes.get_last_error()
                 if err == ERROR_HANDLE_EOF:
                     return extents
-                raise OSError(err, "FSCTL_GET_RETRIEVAL_POINTERS falhou (erro %d)" % err)
-            if ret.value < 16:
+                if err != ERROR_MORE_DATA:
+                    raise OSError(err, "FSCTL_GET_RETRIEVAL_POINTERS falhou (erro %d)" % err)
+            try:
+                part, next_vcn = parse_retrieval(buf, ret.value)  # lê direto do buffer, sem cópia
+            except ValueError:
                 raise OSError(err, "FSCTL_GET_RETRIEVAL_POINTERS devolveu dados incompletos")
-            raw = ctypes.string_at(buf, ret.value)
-            count = raw_unpack("<I", raw, 0)[0]
-            vcn = raw_unpack("<q", raw, 8)[0]
-            off = 16
-            for _ in range(count):
-                next_vcn, lcn = raw_unpack("<qq", raw, off)
-                extents.append(Extent(vcn, lcn, next_vcn - vcn))
-                vcn = next_vcn
-                off += 16
+            if extents:
+                extents.extend(part)
+            else:
+                extents = part
             if ok:
                 return extents
-            start_vcn = vcn
+            start.value = next_vcn
 
     def get_file(self, path: str) -> Optional[FileInfo]:
         try:
