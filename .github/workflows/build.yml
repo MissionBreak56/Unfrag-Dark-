@@ -24,7 +24,22 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e . pytest
-      - run: pytest -q
+      - run: pytest -q --tb=short --junitxml=junit.xml
+      - name: Mostrar falhas do pytest como anotações
+        if: failure()
+        shell: python {0}
+        run: |
+          import xml.etree.ElementTree as ET
+          try:
+              root = ET.parse("junit.xml").getroot()
+          except Exception as e:
+              print("::error title=pytest::sem junit.xml: %s" % e)
+              raise SystemExit(0)
+          for tc in root.iter("testcase"):
+              for bad in list(tc.findall("failure")) + list(tc.findall("error")):
+                  txt = (bad.get("message", "") + "\n" + (bad.text or ""))[-1500:]
+                  txt = txt.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+                  print("::error title=%s::%s" % (tc.get("name"), txt))
 
   windows-exe:
     needs: test
