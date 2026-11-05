@@ -44,13 +44,26 @@ def app(tmp_path, monkeypatch):
         pass
 
 
+def _stacks():
+    import sys
+    import threading
+    import traceback
+    names = {t.ident: t.name for t in threading.enumerate()}
+    return "\n".join("--- thread %s\n%s" % (names.get(i, i), "".join(traceback.format_stack(f)[-6:]))
+                     for i, f in sys._current_frames().items())
+
+
 def pump(a, cond, timeout=15):
     end = time.time() + timeout
     while time.time() < end and not cond():
         a.root.update()
         time.sleep(0.02)
     a.root.update()
-    return cond()
+    ok = cond()
+    if not ok:  # diagnóstico: mostra onde cada thread está parada
+        print("PUMP TIMEOUT\n" + _stacks())
+        raise AssertionError("pump expirou\n" + _stacks())
+    return ok
 
 
 def test_close_hides_to_tray_and_restore(app):
