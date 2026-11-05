@@ -14,6 +14,7 @@ from . import __version__, diskmap, scheduler
 from .backends import IS_WINDOWS, list_drives, open_volume
 from .engine import Cancelled, Engine, Options, Report, SsdSkipped
 from .model import AnalysisResult, DriveInfo
+from .single import SingleInstance, show_already_running
 from .system import MAX_THREADS, auto_threads, fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
 from .tray import Tray
 from .widgets import Card, PillButton, TabView, draw_icon, rounded_points
@@ -27,6 +28,9 @@ CELL_COLORS = {diskmap.FREE: C["free"], diskmap.USED: C["used"], diskmap.USED_FU
 PHASES = {"scan": "Analisando arquivos", "defrag": "Desfragmentando", "compact": "Compactando espaço livre",
           "toend": "Movendo arquivos grandes para o fim"}
 FONT = ("Segoe UI", 10)
+BLOCK_HINT = "Clique em um quadrado do mapa para ver qual bloco é e quais arquivos fragmentados estão nele."
+STATE_NAMES = {diskmap.FREE: "Livre", diskmap.USED: "Em uso", diskmap.USED_FULL: "Em uso",
+               diskmap.FRAGMENTED: "Fragmentado", diskmap.UNMOVABLE: "Não movível"}
 
 
 def _dark_titlebar(root: tk.Tk) -> None:
@@ -245,6 +249,11 @@ class App:
         self.cells: List[int] = []
         self.settings = load_settings()
 
+        self.sel_cell: Optional[int] = None  # bloco selecionado no mapa
+        self.sel_lo: Optional[int] = None    # primeiro cluster do bloco (sobrevive a redimensionar a janela)
+        self._map_geom = None
+        self._frag_files: list = []
+        self._unmov_files: list = []
         self.tray: Optional[Tray] = None
         self._tray_hint_shown = False
         self._hidden = False
@@ -358,6 +367,8 @@ class App:
         self.canvas = tk.Canvas(mcard.inner, bg=C["panel"], highlightthickness=0, height=150)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda e: self._draw_map())
+        self.canvas.bind("<Button-1>", self._on_map_click)
+        self.canvas.bind("<Motion>", self._on_map_motion)
         legend = ttk.Frame(mcard.inner)
         legend.pack(fill="x", pady=(8, 0))
         for name, color in (("Livre", C["free"]), ("Em uso", C["used"]), ("Fragmentado", C["frag"]),
@@ -366,6 +377,12 @@ class App:
             sw.create_polygon(rounded_points(1, 1, 15, 15, 5), smooth=True, fill=color, outline="")
             sw.pack(side="left", padx=(0, 5))
             ttk.Label(legend, text=name, foreground=C["fg"]).pack(side="left", padx=(0, 16))
+        self.v_block = tk.StringVar(value=BLOCK_HINT)
+        blk = ttk.Label(mcard.inner, textvariable=self.v_block, foreground=C["accent"], wraplength=600,
+                        justify="left")
+        blk.pack(fill="x", pady=(6, 0))
+        # quebra a linha na largura do cartão (uma linha fixa e longa alargaria o painel e esmagaria a lista de unidades)
+        mcard.inner.bind("<Configure>", lambda e: blk.configure(wraplength=max(300, e.width - 12)), add="+")
 
         self.nb = TabView(right, C)
         self.nb.pack(fill="both", expand=True, pady=(8, 0))
@@ -395,13 +412,23 @@ class App:
     def _tab_files(self) -> None:
         f = ttk.Frame(self.nb.body, style="Panel.TFrame")
         self.nb.add(f, "Arquivos fragmentados", "list")
-        cols = ("frags", "size", "path")
-        self._file_heads = {"frags": "Fragmentos", "size": "Tamanho", "path": "Localização"}
-        self.files_tree = ttk.Treeview(f, columns=cols, show="headings", height=6)
-        for c, t, w, a in (("frags", "Fragmentos", 110, "center"), ("size", "Tamanho", 110, "center"), ("path", "Localização", 600, "w")):
+        hdr = ttk.Frame(f)
+        hdr.pack(fill="x", padx=8, pady=(4, 2))
+        self.v_filesinfo = tk.StringVar(value="")
+        ttk.Label(hdr, textvariable=self.v_filesinfo, foreground=C["muted"]).pack(side="left")
+        self.btn_all = PillButton(hdr, "Mostrar todos", command=self._clear_selection, kind="soft",
+                                  bg=C["panel"], padx=14, height=26, font=("Segoe UI", 9))
+        body = ttk.Frame(f)
+        body.pack(fill="both", expand=True)
+        cols = ("frags", "size", "path", "blk")
+        self._file_heads = {"frags": "Fragmentos", "size": "Tamanho", "path": "Localização", "blk": "Neste bloco"}
+        self.files_tree = ttk.Treeview(body, columns=cols, show="headings", height=6)
+        for c, t, w, a in (("frags", "Fragmentos", 110, "center"), ("size", "Tamanho", 110, "center"),
+                           ("path", "Localização", 600, "w"), ("blk", "Neste bloco", 170, "center")):
             self.files_tree.heading(c, text=t, anchor="center" if a == "center" else "w", command=lambda col=c: self._sort_files(col))
             self.files_tree.column(c, width=w, anchor=a)
-        sb = ttk.Scrollbar(f, orient="vertical", command=self.files_tree.yview)
+        self.files_tree.configure(displaycolumns=("frags", "size", "path"))
+        sb = ttk.Scrollbar(body, orient="vertical", command=self.files_tree.yview)
         self.files_tree.configure(yscrollcommand=sb.set)
         self.files_tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
@@ -729,8 +756,10 @@ class App:
             self.v_status.set("Análise concluída em %.1f s: %.1f%% fragmentado, %d arquivos." % (r.seconds, r.fragmentation_percent, r.files))
             self._log("Análise em %.1f s: %.1f%% fragmentado, %d de %d arquivos fragmentados" % (r.seconds, r.fragmentation_percent, r.fragmented_files, r.files))
         self.v_last.set("Última análise: " + time.strftime("%d/%m/%Y %H:%M"))
-        self._draw_map()
+        self.sel_cell = self.sel_lo = None  # os dados mudaram: a seleção antiga não vale mais
+        self.v_block.set(BLOCK_HINT)
         self._fill_files()
+        self._draw_map()
 
     def _draw_map(self) -> None:
         c = self.canvas
@@ -747,27 +776,117 @@ class App:
                                   shade=True)
         self.cells = cells
         step = size + gap
+        self._map_geom = (cols, step, size)
         for i, st in enumerate(cells):
             x, y = (i % cols) * step, (i // cols) * step
             c.create_rectangle(x, y, x + size, y + size, fill=CELL_COLORS[st], outline="")
+        if self.sel_lo is not None:  # a janela mudou de tamanho: acha o bloco que contém o mesmo cluster
+            per = eng.backend.total_clusters / len(cells)
+            self._select_cell(min(len(cells) - 1, int(self.sel_lo / per)), switch_tab=False)
 
     def _fill_files(self) -> None:
         self.files_tree.delete(*self.files_tree.get_children())
+        self._frag_files, self._unmov_files = [], []
+        self._block_filter = False
+        self.files_tree.configure(displaycolumns=("frags", "size", "path"))
+        self.btn_all.pack_forget()
         if not self.engine:
+            self.v_filesinfo.set("")
             return
-        rows = [(f.fragments, f.size, f.path) for f in self.engine.files.values() if f.fragments > 1]
-        self._file_rows = rows
+        for f in self.engine.files.values():
+            if f.fragments > 1:
+                self._frag_files.append(f)
+            if not f.movable and f.extents:
+                self._unmov_files.append(f)
+        self._file_rows = [(f.fragments, f.size, f.path, "") for f in self._frag_files]
+        self.v_filesinfo.set("Todos os arquivos fragmentados (%d). Clique em um quadrado do mapa para filtrar por bloco."
+                             % len(self._file_rows))
         self._render_files()
 
     def _render_files(self) -> None:
         col, desc = self._sort_state
-        idx = {"frags": 0, "size": 1, "path": 2}[col]
+        idx = {"frags": 0, "size": 1, "path": 2, "blk": 3}[col]
         for k, base in self._file_heads.items():
             self.files_tree.heading(k, text=(base + ("  \u25bc" if desc else "  \u25b2")) if k == col else base)
         rows = sorted(getattr(self, "_file_rows", []), key=lambda r: r[idx], reverse=desc)[:5000]
         self.files_tree.delete(*self.files_tree.get_children())
-        for fr, size, path in rows:
-            self.files_tree.insert("", "end", values=(fr, fmt_bytes(size), path), tags=(path,))
+        for fr, size, path, blk in rows:
+            self.files_tree.insert("", "end", values=(fr, fmt_bytes(size), path, blk), tags=(path,))
+
+    # --- bloco do mapa -----------------------------------------------------------
+    def _cell_at(self, ev) -> Optional[int]:
+        geom = self._map_geom
+        if not geom or not self.engine or not self.cells:
+            return None
+        cols, step, size = geom
+        col, row = ev.x // step, ev.y // step
+        if ev.x % step >= size or ev.y % step >= size or col >= cols:  # entre dois quadrados
+            return None
+        i = row * cols + col
+        return i if 0 <= i < len(self.cells) else None
+
+    def _on_map_motion(self, ev) -> None:
+        self.canvas.configure(cursor="hand2" if self._cell_at(ev) is not None else "")
+
+    def _on_map_click(self, ev) -> None:
+        i = self._cell_at(ev)
+        if i is None:
+            return
+        if i == self.sel_cell:  # clicar de novo no mesmo quadrado limpa o filtro
+            self._clear_selection()
+        else:
+            self._select_cell(i)
+
+    def _select_cell(self, i: int, switch_tab: bool = True) -> None:
+        eng = self.engine
+        if not eng or not self.cells:
+            return
+        total, cs = eng.backend.total_clusters, eng.backend.cluster_size
+        lo, hi = diskmap.cell_span(total, len(self.cells), i)
+        free = diskmap.cell_free_clusters(eng.free.runs(), lo, hi)
+        hits = diskmap.fragmented_in_cell(self._frag_files, lo, hi)
+        unmov = diskmap.unmovable_in_cell(self._unmov_files, lo, hi)
+        self.sel_cell, self.sel_lo = i, lo
+        span = max(1, hi - lo)
+        num = lambda n: "{:,}".format(n).replace(",", ".")
+        name = STATE_NAMES[self.cells[i]]
+        parts = ["Bloco %s de %s" % (num(i + 1), num(len(self.cells))), name,
+                 "clusters %s a %s" % (num(lo), num(hi - 1)),
+                 "posição %s a %s (%s)" % (fmt_bytes(lo * cs), fmt_bytes(hi * cs), fmt_bytes((hi - lo) * cs)),
+                 "%d%% livre" % round(100 * free / span)]
+        if hits:
+            parts.append("%d arquivo(s) fragmentado(s)" % len(hits))
+        if unmov:
+            parts.append("%d não movível(is)" % unmov)
+        self.v_block.set("  ·  ".join(parts))
+        self._file_rows = [(f.fragments, f.size, f.path, "%d pedaço(s) · %s" % (n, fmt_bytes(cl * cs)))
+                           for f, n, cl in hits]
+        self._block_filter = True
+        self.files_tree.configure(displaycolumns=("frags", "size", "blk", "path"))
+        self.v_filesinfo.set("Bloco %s (%s): %s" % (
+            num(i + 1), name.lower(),
+            "%d arquivo(s) fragmentado(s) com dados neste bloco." % len(hits) if hits
+            else "nenhum arquivo fragmentado neste bloco."))
+        self.btn_all.pack(side="right")
+        self._render_files()
+        self._draw_selection()
+        if switch_tab:
+            self.nb.select(0)
+
+    def _clear_selection(self) -> None:
+        self.sel_cell = self.sel_lo = None
+        self.v_block.set(BLOCK_HINT)
+        self._fill_files()
+        self._draw_selection()
+
+    def _draw_selection(self) -> None:
+        c = self.canvas
+        c.delete("sel")
+        if self.sel_cell is None or not self._map_geom:
+            return
+        cols, step, size = self._map_geom
+        x, y = (self.sel_cell % cols) * step, (self.sel_cell // cols) * step
+        c.create_rectangle(x - 1, y - 1, x + size + 1, y + size + 1, outline="#ffffff", width=2, tags="sel")
 
     def _sort_files(self, col: str) -> None:
         prev, desc = self._sort_state
@@ -907,7 +1026,16 @@ class App:
 
 
 def run_gui(demo: bool = False) -> int:
+    inst = SingleInstance("demo" if demo else "main")
+    if not inst.acquire():
+        inst.signal_existing()  # a janela que já existe aparece (mesmo se estiver na bandeja)
+        show_already_running()
+        return 0
     root = tk.Tk()
-    App(root, demo=demo)
-    root.mainloop()
+    app = App(root, demo=demo)
+    inst.listen(lambda: app.q.put(("tray", "show")))
+    try:
+        root.mainloop()
+    finally:
+        inst.release()
     return 0

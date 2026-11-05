@@ -62,3 +62,66 @@ def summary(cells: Sequence[int]) -> dict:
     return {k: sum(1 for c in cells if c == v)
             for k, v in (("free", FREE), ("used", USED), ("fragmented", FRAGMENTED),
                          ("unmovable", UNMOVABLE))} | {"used": sum(1 for c in cells if c in (USED, USED_FULL))}
+
+
+# --- detalhe de um bloco (quadrado do mapa) -------------------------------------------------
+
+def cell_span(total_clusters: int, cells: int, i: int) -> Tuple[int, int]:
+    """Intervalo [lo, hi) de clusters que `build_map` atribui à célula `i`."""
+    per = total_clusters / cells
+
+    def start(c: int) -> int:
+        if c <= 0:
+            return 0
+        if c >= cells:
+            return total_clusters
+        x = int(c * per)
+        while x > 0 and int((x - 1) / per) >= c:  # acerta erros de ponto flutuante
+            x -= 1
+        while int(x / per) < c:
+            x += 1
+        return min(x, total_clusters)
+
+    return start(i), start(i + 1)
+
+
+def cell_free_clusters(free_runs: Iterable[Tuple[int, int]], lo: int, hi: int) -> int:
+    """Quantos clusters livres existem em [lo, hi)."""
+    total = 0
+    for s, n in free_runs:
+        a, b = max(s, lo), min(s + n, hi)
+        if b > a:
+            total += b - a
+    return total
+
+
+def fragmented_in_cell(files: Iterable[FileInfo], lo: int, hi: int) -> List[Tuple[FileInfo, int, int]]:
+    """Arquivos fragmentados (mais de um pedaço) com dados em [lo, hi).
+
+    Devolve (arquivo, nº de pedaços dentro do bloco, clusters dentro do bloco)."""
+    out: List[Tuple[FileInfo, int, int]] = []
+    for f in files:
+        if f.fragments <= 1:
+            continue
+        pieces = clusters = 0
+        for e in f.extents:
+            if e.lcn < 0:
+                continue
+            a, b = max(e.lcn, lo), min(e.lcn + e.length, hi)
+            if b > a:
+                pieces += 1
+                clusters += b - a
+        if pieces:
+            out.append((f, pieces, clusters))
+    return out
+
+
+def unmovable_in_cell(files: Iterable[FileInfo], lo: int, hi: int) -> int:
+    """Quantos arquivos não movíveis têm dados em [lo, hi)."""
+    n = 0
+    for f in files:
+        if f.movable or not f.extents:
+            continue
+        if any(e.lcn >= 0 and e.lcn < hi and e.lcn + e.length > lo for e in f.extents):
+            n += 1
+    return n

@@ -84,6 +84,11 @@ unfrag --demo defrag C: --mode freespace
   (300 mil arquivos, só CPU em Python, sem E/S) a análise caiu de ~2,7 s para ~1,3 s.
 * Objetos ctypes (buffer, `c_int64`, `DWORD`, `byref`) são reaproveitados por thread.
 * A janela e a CLI mostram o tempo da análise.
+* **Instância única:** abrir o programa de novo com ele já aberto (inclusive escondido na bandeja) mostra o
+  aviso "O Unfrag Dark já está aberto" e traz a janela existente para a frente.
+* **Detalhe do bloco:** clique em um quadrado do mapa para ver qual bloco é (número, clusters, posição no
+  disco, % livre) e quais arquivos fragmentados têm dados nele; a lista passa a mostrar só esses arquivos,
+  com quantos pedaços de cada um caem no bloco. Clique de novo no quadrado (ou em *Mostrar todos*) para voltar.
 * **Bandeja do sistema:** ao clicar no X a janela some e o programa continua em execução ao lado do relógio
   (inclusive uma análise/desfragmentação em andamento). Clique no ícone para abrir; o menu do ícone tem
   *Abrir*, *Parar operação* e *Sair*. Dá para desligar em Opções ("Fechar a janela minimiza para a bandeja").
