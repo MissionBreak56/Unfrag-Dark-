@@ -84,6 +84,9 @@ unfrag --demo defrag C: --mode freespace
   (300 mil arquivos, só CPU em Python, sem E/S) a análise caiu de ~2,7 s para ~1,3 s.
 * Objetos ctypes (buffer, `c_int64`, `DWORD`, `byref`) são reaproveitados por thread.
 * A janela e a CLI mostram o tempo da análise.
+* **Bandeja do sistema:** ao clicar no X a janela some e o programa continua em execução ao lado do relógio
+  (inclusive uma análise/desfragmentação em andamento). Clique no ícone para abrir; o menu do ícone tem
+  *Abrir*, *Parar operação* e *Sair*. Dá para desligar em Opções ("Fechar a janela minimiza para a bandeja").
 
 ## Segurança — leia antes de usar em disco real
 

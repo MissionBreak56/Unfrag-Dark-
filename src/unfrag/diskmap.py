@@ -6,10 +6,11 @@ from typing import Iterable, List, Sequence, Tuple
 from .model import FileInfo
 
 FREE, USED, FRAGMENTED, UNMOVABLE = 0, 1, 2, 3
+USED_FULL = 4  # só com shade=True: célula em uso e totalmente ocupada (tom mais escuro no mapa)
 
 
 def build_map(total_clusters: int, free_runs: Iterable[Tuple[int, int]],
-              files: Iterable[FileInfo], cells: int) -> List[int]:
+              files: Iterable[FileInfo], cells: int, shade: bool = False) -> List[int]:
     if cells <= 0 or total_clusters <= 0:
         return []
     per = total_clusters / cells
@@ -50,6 +51,8 @@ def build_map(total_clusters: int, free_runs: Iterable[Tuple[int, int]],
             out.append(UNMOVABLE)
         elif frag[c]:
             out.append(FRAGMENTED)
+        elif shade and free[c] < per * 0.02:
+            out.append(USED_FULL)
         else:
             out.append(USED)
     return out
@@ -58,4 +61,4 @@ def build_map(total_clusters: int, free_runs: Iterable[Tuple[int, int]],
 def summary(cells: Sequence[int]) -> dict:
     return {k: sum(1 for c in cells if c == v)
             for k, v in (("free", FREE), ("used", USED), ("fragmented", FRAGMENTED),
-                         ("unmovable", UNMOVABLE))}
+                         ("unmovable", UNMOVABLE))} | {"used": sum(1 for c in cells if c in (USED, USED_FULL))}

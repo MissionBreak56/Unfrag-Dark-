@@ -1,3 +1,3 @@
 """Unfrag Dark - desfragmentador NTFS de código aberto com tema escuro."""
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"

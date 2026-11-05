@@ -36,7 +36,7 @@ jobs:
           python-version: "3.12"
       - run: pip install . pyinstaller
       - name: GUI (pede administrador)
-        run: pyinstaller --onefile --windowed --uac-admin --name UnfragDark --icon src/unfrag/assets/icon.ico --add-data "src/unfrag/assets;unfrag/assets" --paths src launcher.py
+        run: pyinstaller --onefile --windowed --uac-admin --name UnfragDark --hidden-import pystray._win32 --hidden-import PIL.Image --icon src/unfrag/assets/icon.ico --add-data "src/unfrag/assets;unfrag/assets" --paths src launcher.py
       - name: CLI
         run: pyinstaller --onefile --uac-admin --name unfrag --icon src/unfrag/assets/icon.ico --add-data "src/unfrag/assets;unfrag/assets" --paths src launcher.py
       - name: Smoke test do CLI em modo demo

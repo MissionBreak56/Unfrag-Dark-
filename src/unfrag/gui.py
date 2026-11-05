@@ -1,10 +1,11 @@
-"""Interface gráfica (Tkinter) com tema escuro."""
+"""Interface gráfica (Tkinter) com tema escuro azul "vidro", cartões arredondados e bandeja do sistema."""
 from __future__ import annotations
 
 import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
@@ -14,11 +15,14 @@ from .backends import IS_WINDOWS, list_drives, open_volume
 from .engine import Cancelled, Engine, Options, Report, SsdSkipped
 from .model import AnalysisResult, DriveInfo
 from .system import MAX_THREADS, auto_threads, fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
+from .tray import Tray
+from .widgets import Card, PillButton, TabView, draw_icon, rounded_points
 
-C = dict(bg="#101216", panel="#171a20", panel2="#1f232b", line="#2a2f39", fg="#e7e9ee",
-         muted="#8d94a5", accent="#4c8dff", accent2="#3a6fd0", ok="#3ecf8e", warn="#f5a524",
-         bad="#ef5350", free="#242934", used="#3b6fd6", frag="#ef5350", unmov="#f5a524")
-CELL_COLORS = {diskmap.FREE: C["free"], diskmap.USED: C["used"],
+C = dict(bg="#060b1d", panel="#0b1633", panel2="#10204a", line="#1c3470", fg="#e8efff",
+         muted="#8da2cf", accent="#4cc3ff", accent2="#2c5fe0", ok="#3ecf8e", warn="#f5a524",
+         bad="#ef4444", glow="#12296a", edge="#2457c9", tab_sel="#0f2556", tab_hover="#0c1c44",
+         free="#5ac8fa", used="#2f7be8", used_full="#1f4fc4", frag="#ef4444", unmov="#fbd22b")
+CELL_COLORS = {diskmap.FREE: C["free"], diskmap.USED: C["used"], diskmap.USED_FULL: C["used_full"],
                diskmap.FRAGMENTED: C["frag"], diskmap.UNMOVABLE: C["unmov"]}
 PHASES = {"scan": "Analisando arquivos", "defrag": "Desfragmentando", "compact": "Compactando espaço livre",
           "toend": "Movendo arquivos grandes para o fim"}
@@ -47,44 +51,48 @@ def apply_theme(root: tk.Tk) -> None:
     root.option_add("*TCombobox*Listbox.selectBackground", C["accent2"])
     s = ttk.Style(root)
     s.theme_use("clam")
-    s.configure(".", background=C["bg"], foreground=C["fg"], fieldbackground=C["panel2"],
+    # Os widgets ttk vivem quase todos dentro de cartões: o padrão usa a cor do cartão.
+    s.configure(".", background=C["panel"], foreground=C["fg"], fieldbackground=C["panel2"],
                 bordercolor=C["line"], lightcolor=C["line"], darkcolor=C["line"],
                 troughcolor=C["panel"], font=FONT, focuscolor=C["accent"])
-    s.configure("TFrame", background=C["bg"])
+    s.configure("TFrame", background=C["panel"])
     s.configure("Panel.TFrame", background=C["panel"])
-    s.configure("TLabel", background=C["bg"], foreground=C["fg"])
+    s.configure("Root.TFrame", background=C["bg"])
+    s.configure("TLabel", background=C["panel"], foreground=C["fg"])
     s.configure("Panel.TLabel", background=C["panel"])
+    s.configure("Root.TLabel", background=C["bg"], foreground=C["fg"])
+    s.configure("RootMuted.TLabel", background=C["bg"], foreground=C["muted"])
+    s.configure("Accent.TLabel", background=C["bg"], foreground=C["accent"], font=("Segoe UI", 10))
     s.configure("Muted.TLabel", foreground=C["muted"])
     s.configure("Big.TLabel", font=("Segoe UI Semibold", 20), background=C["panel"])
     s.configure("TButton", background=C["panel2"], foreground=C["fg"], padding=(14, 7),
-                borderwidth=1, relief="flat")
+                bordercolor=C["edge"], borderwidth=1, relief="flat")
     s.map("TButton", background=[("active", C["line"]), ("disabled", C["panel"])],
           foreground=[("disabled", C["muted"])])
-    s.configure("Accent.TButton", background=C["accent"], foreground="#ffffff")
-    s.map("Accent.TButton", background=[("active", C["accent2"]), ("disabled", C["panel"])])
-    s.configure("Danger.TButton", background="#7a2d2d", foreground="#ffffff")
-    s.map("Danger.TButton", background=[("active", "#9b3a3a"), ("disabled", C["panel"])])
-    s.configure("TCheckbutton", background=C["bg"], foreground=C["fg"], indicatorbackground=C["panel2"])
-    s.map("TCheckbutton", background=[("active", C["bg"])], indicatorbackground=[("selected", C["accent"])])
+    s.configure("Accent.TButton", background=C["accent2"], foreground="#ffffff")
+    s.map("Accent.TButton", background=[("active", "#3b78f5"), ("disabled", C["panel"])])
+    s.configure("Danger.TButton", background="#b3302b", foreground="#ffffff")
+    s.map("Danger.TButton", background=[("active", "#d0403a"), ("disabled", C["panel"])])
+    s.configure("TCheckbutton", background=C["panel"], foreground=C["fg"], indicatorbackground=C["panel2"],
+                indicatorforeground=C["accent"])
+    s.map("TCheckbutton", background=[("active", C["panel"])], indicatorbackground=[("selected", C["accent2"])])
     s.configure("TEntry", fieldbackground=C["panel2"], foreground=C["fg"], insertcolor=C["fg"])
     s.configure("TSpinbox", fieldbackground=C["panel2"], foreground=C["fg"], arrowcolor=C["fg"])
     s.configure("TCombobox", fieldbackground=C["panel2"], foreground=C["fg"], arrowcolor=C["fg"],
                 background=C["panel2"])
     s.map("TCombobox", fieldbackground=[("readonly", C["panel2"])], foreground=[("readonly", C["fg"])])
     s.configure("Treeview", background=C["panel"], fieldbackground=C["panel"], foreground=C["fg"],
-                rowheight=26, borderwidth=0)
+                rowheight=31, borderwidth=0)
     s.map("Treeview", background=[("selected", C["accent2"])], foreground=[("selected", "#ffffff")])
-    s.configure("Treeview.Heading", background=C["panel2"], foreground=C["muted"], relief="flat",
-                padding=(8, 6), font=("Segoe UI Semibold", 9))
-    s.map("Treeview.Heading", background=[("active", C["line"])])
-    s.configure("TNotebook", background=C["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0))
-    s.configure("TNotebook.Tab", background=C["panel"], foreground=C["muted"], padding=(16, 8),
-                borderwidth=0)
-    s.map("TNotebook.Tab", background=[("selected", C["panel2"])], foreground=[("selected", C["fg"])])
+    s.configure("Treeview.Heading", background=C["panel"], foreground=C["fg"], relief="flat",
+                padding=(8, 8), font=("Segoe UI Semibold", 9), borderwidth=0)
+    s.map("Treeview.Heading", background=[("active", C["panel2"])])
+    s.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])  # sem borda do Treeview
     s.configure("Horizontal.TProgressbar", background=C["accent"], troughcolor=C["panel"],
-                borderwidth=0, thickness=8)
-    s.configure("TScrollbar", background=C["panel2"], troughcolor=C["panel"], arrowcolor=C["muted"],
-                bordercolor=C["panel"])
+                bordercolor=C["bg"], lightcolor=C["accent"], darkcolor=C["accent"], borderwidth=0, thickness=4)
+    s.configure("TScrollbar", background="#1d3a86", troughcolor=C["panel"], arrowcolor=C["accent"],
+                bordercolor=C["panel"], lightcolor="#1d3a86", darkcolor="#1d3a86", relief="flat")
+    s.map("TScrollbar", background=[("active", C["accent2"])])
     s.configure("TPanedwindow", background=C["bg"])
     s.configure("TSeparator", background=C["line"])
 
@@ -177,7 +185,7 @@ class ScrollFrame(ttk.Frame):
 
     def __init__(self, parent, bg=None):
         super().__init__(parent)
-        bg = bg or C["bg"]
+        bg = bg or C["panel"]
         self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
         self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vbar.set)
@@ -237,9 +245,13 @@ class App:
         self.cells: List[int] = []
         self.settings = load_settings()
 
+        self.tray: Optional[Tray] = None
+        self._tray_hint_shown = False
+        self._hidden = False
+        self._last_tray_title = 0.0
         root.title("Unfrag Dark %s%s" % (__version__, "  [DEMO - discos simulados]" if self.demo else ""))
-        root.geometry("1180x800")
-        root.minsize(980, 640)
+        root.geometry("1280x820")
+        root.minsize(1040, 680)
         apply_theme(root)
         set_app_icon(root)
         self._vars()
@@ -263,6 +275,8 @@ class App:
         self.v_fullscan = tk.BooleanVar(value=s.get("full_rescan", False))
         self.v_exclude = tk.StringVar(value=s.get("exclude", ""))
         self.v_path = tk.StringVar(value="")
+        self.v_tray = tk.BooleanVar(value=s.get("close_to_tray", True))
+        self.v_last = tk.StringVar(value="")
         self.v_status = tk.StringVar(value="Pronto.")
         self.v_sched_freq = tk.StringVar(value="semanal")
         self.v_sched_time = tk.StringVar(value="03:00")
@@ -271,94 +285,121 @@ class App:
                                                ("frag", "files", "fragfiles", "frags", "free", "largest", "moved")}
 
     # --- layout ------------------------------------------------------------
+    def _card(self, parent, pad=(14, 12)) -> Card:
+        return Card(parent, C["panel"], C["glow"], C["edge"], C["bg"], pad=pad)
+
     def _build(self) -> None:
-        top = ttk.Frame(self.root, padding=(14, 12, 14, 8))
+        top = ttk.Frame(self.root, style="Root.TFrame", padding=(18, 14, 18, 10))
         top.pack(fill="x")
-        ttk.Label(top, text="Unfrag Dark", font=("Segoe UI Semibold", 15)).pack(side="left")
-        ttk.Label(top, text="  desfragmentador NTFS", style="Muted.TLabel").pack(side="left", pady=(4, 0))
-        self.btn_stop = ttk.Button(top, text="Parar", style="Danger.TButton", command=self.stop, state="disabled")
-        self.btn_stop.pack(side="right")
+        ttk.Label(top, text="Unfrag Dark", style="Root.TLabel", font=("Segoe UI Semibold", 17)).pack(side="left")
+        ttk.Label(top, text="  desfragmentador NTFS", style="Accent.TLabel").pack(side="left", pady=(7, 0))
+        bar = ttk.Frame(top, style="Root.TFrame")
+        bar.pack(side="right")
         self.btns = []
-        for text, mode, style in (("Espaço livre", "freespace", "TButton"), ("Rápida", "quick", "TButton"),
-                                  ("Desfragmentar", "defrag", "Accent.TButton"), ("Analisar", "analyze", "TButton")):
-            b = ttk.Button(top, text=text, style=style, command=lambda m=mode: self.start(m))
-            b.pack(side="right", padx=(0, 8))
+        for text, mode in (("Analisar", "analyze"), ("Desfragmentar", "defrag"), ("Rápida", "quick"),
+                           ("Espaço livre", "freespace")):
+            b = PillButton(bar, text, command=lambda m=mode: self.start(m), bg=C["bg"])
+            b.pack(side="left", padx=(0, 8))
             ToolTip(b, *MODE_HELP[mode])
             self.btns.append(b)
+        self.btn_stop = PillButton(bar, "Parar", command=self.stop, kind="danger", bg=C["bg"], state="disabled")
+        self.btn_stop.pack(side="left")
 
         if IS_WINDOWS and not self.demo:
             from .backends.windows import is_admin
             if not is_admin():
-                warn = tk.Label(self.root, bg="#3a2a10", fg=C["warn"], anchor="w", padx=14, pady=6,
+                warn = tk.Label(self.root, bg="#2a2110", fg=C["warn"], anchor="w", padx=18, pady=6,
                                 text="Execute como Administrador para analisar e desfragmentar.")
                 warn.pack(fill="x")
 
         paned = ttk.Panedwindow(self.root, orient="horizontal")
-        paned.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        paned.pack(fill="both", expand=True, padx=18, pady=(0, 6))
+        self.paned = paned
+        self.root.after(80, self._set_sash)
 
-        left = ttk.Frame(paned, style="Panel.TFrame")
+        left = ttk.Frame(paned, style="Root.TFrame")
         paned.add(left, weight=1)
-        ttk.Label(left, text="UNIDADES", style="Panel.TLabel", foreground=C["muted"],
-                  font=("Segoe UI Semibold", 8)).pack(anchor="w", padx=12, pady=(10, 4))
+        lcard = self._card(left, pad=(10, 10))
+        lcard.pack(fill="both", expand=True, padx=(0, 8))
+        li = lcard.inner
+        ttk.Label(li, text="UNIDADES", foreground=C["fg"], font=("Segoe UI Semibold", 9)).pack(anchor="w", padx=6, pady=(2, 6))
         cols = ("drive", "label", "kind", "size", "free")
-        self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse", height=8)
-        for c, t, w in (("drive", "Un.", 40), ("label", "Nome", 84), ("kind", "Tipo", 62),
-                        ("size", "Tamanho", 86), ("free", "Livre", 86)):
+        self.tree = ttk.Treeview(li, columns=cols, show="headings", selectmode="browse", height=8)
+        for c, t, w in (("drive", "Un.", 44), ("label", "Nome", 90), ("kind", "Tipo", 70),
+                        ("size", "Tamanho", 84), ("free", "Livre", 84)):
             self.tree.heading(c, text=t)
-            self.tree.column(c, width=w, anchor="w")
-        self.tree.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+            self.tree.column(c, width=w, anchor="center")
+        self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.bind("<<TreeviewSelect>>", lambda e: self._on_drive_selected())
-        ttk.Button(left, text="Atualizar lista", command=self.refresh_drives).pack(padx=8, pady=(0, 10), anchor="w")
+        PillButton(li, "Atualizar lista", command=self.refresh_drives, kind="soft", bg=C["panel"],
+                   padx=16, height=32).pack(anchor="w", padx=2, pady=(0, 2))
 
-        right = ttk.Frame(paned)
+        right = ttk.Frame(paned, style="Root.TFrame")
         paned.add(right, weight=4)
 
-        card = ttk.Frame(right, style="Panel.TFrame", padding=12)
-        card.pack(fill="x")
+        row = ttk.Frame(right, style="Root.TFrame")
+        row.pack(fill="x")
+        c1 = self._card(row)
+        c1.pack(side="left", padx=(0, 8))
+        c2 = self._card(row)
+        c2.pack(side="left")
         for i, (key, lbl) in enumerate((("frag", "Fragmentação"), ("fragfiles", "Arquivos fragmentados"),
                                         ("frags", "Fragmentos"), ("free", "Espaço livre"),
                                         ("largest", "Maior trecho livre"), ("moved", "Última execução"))):
-            f = ttk.Frame(card, style="Panel.TFrame")
-            f.grid(row=0, column=i, padx=(0, 18), sticky="w")
-            ttk.Label(f, text=lbl.upper(), style="Panel.TLabel", foreground=C["muted"],
-                      font=("Segoe UI Semibold", 8)).pack(anchor="w")
+            host = c1.inner if i < 5 else c2.inner
+            f = ttk.Frame(host)
+            f.grid(row=0, column=i, padx=(0, 22), sticky="w")
+            ttk.Label(f, text=lbl.upper(), foreground=C["fg"], font=("Segoe UI Semibold", 8)).pack(anchor="w")
             ttk.Label(f, textvariable=self.stats[key], style="Big.TLabel" if i == 0 else "Panel.TLabel",
                       font=("Segoe UI Semibold", 20) if i == 0 else ("Segoe UI Semibold", 12)).pack(anchor="w")
 
-        mapbox = ttk.Frame(right, style="Panel.TFrame", padding=(12, 8))
-        mapbox.pack(fill="both", expand=True, pady=(8, 0))
-        self.canvas = tk.Canvas(mapbox, bg=C["panel"], highlightthickness=0, height=150)
+        mcard = self._card(right, pad=(12, 10))
+        mcard.pack(fill="both", expand=True, pady=(8, 0))
+        self.canvas = tk.Canvas(mcard.inner, bg=C["panel"], highlightthickness=0, height=150)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda e: self._draw_map())
-        legend = ttk.Frame(mapbox, style="Panel.TFrame")
-        legend.pack(fill="x", pady=(6, 0))
+        legend = ttk.Frame(mcard.inner)
+        legend.pack(fill="x", pady=(8, 0))
         for name, color in (("Livre", C["free"]), ("Em uso", C["used"]), ("Fragmentado", C["frag"]),
                             ("Não movível", C["unmov"])):
-            sw = tk.Canvas(legend, width=12, height=12, bg=C["panel"], highlightthickness=0)
-            sw.create_rectangle(0, 0, 12, 12, fill=color, outline="")
-            sw.pack(side="left", padx=(0, 4))
-            ttk.Label(legend, text=name, style="Panel.TLabel", foreground=C["muted"]).pack(side="left", padx=(0, 14))
+            sw = tk.Canvas(legend, width=16, height=16, bg=C["panel"], highlightthickness=0)
+            sw.create_polygon(rounded_points(1, 1, 15, 15, 5), smooth=True, fill=color, outline="")
+            sw.pack(side="left", padx=(0, 5))
+            ttk.Label(legend, text=name, foreground=C["fg"]).pack(side="left", padx=(0, 16))
 
-        self.nb = ttk.Notebook(right)
+        self.nb = TabView(right, C)
         self.nb.pack(fill="both", expand=True, pady=(8, 0))
         self._tab_files()
         self._tab_options()
         self._tab_schedule()
         self._tab_log()
 
-        bottom = ttk.Frame(self.root, padding=(14, 0, 14, 10))
+        bottom = ttk.Frame(self.root, style="Root.TFrame", padding=(18, 0, 18, 10))
         bottom.pack(fill="x")
         self.progress = ttk.Progressbar(bottom, mode="determinate")
-        self.progress.pack(fill="x")
-        ttk.Label(bottom, textvariable=self.v_status, style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+        self.progress.pack(fill="x", pady=(0, 6))
+        line = ttk.Frame(bottom, style="Root.TFrame")
+        line.pack(fill="x")
+        ttk.Label(line, textvariable=self.v_status, style="RootMuted.TLabel").pack(side="left")
+        ttk.Label(line, textvariable=self.v_last, style="RootMuted.TLabel").pack(side="right")
+        clock = tk.Canvas(line, width=22, height=22, bg=C["bg"], highlightthickness=0)
+        draw_icon(clock, "clock", 11, 11, C["accent"])
+        clock.pack(side="right", padx=(0, 6))
+
+    def _set_sash(self) -> None:
+        try:
+            self.paned.sashpos(0, 400)
+        except tk.TclError:
+            pass
 
     def _tab_files(self) -> None:
-        f = ttk.Frame(self.nb, style="Panel.TFrame")
-        self.nb.add(f, text="Arquivos fragmentados")
+        f = ttk.Frame(self.nb.body, style="Panel.TFrame")
+        self.nb.add(f, "Arquivos fragmentados", "list")
         cols = ("frags", "size", "path")
+        self._file_heads = {"frags": "Fragmentos", "size": "Tamanho", "path": "Localização"}
         self.files_tree = ttk.Treeview(f, columns=cols, show="headings", height=6)
-        for c, t, w, a in (("frags", "Fragmentos", 90, "e"), ("size", "Tamanho", 90, "e"), ("path", "Caminho", 600, "w")):
-            self.files_tree.heading(c, text=t, command=lambda col=c: self._sort_files(col))
+        for c, t, w, a in (("frags", "Fragmentos", 110, "center"), ("size", "Tamanho", 110, "center"), ("path", "Localização", 600, "w")):
+            self.files_tree.heading(c, text=t, anchor="center" if a == "center" else "w", command=lambda col=c: self._sort_files(col))
             self.files_tree.column(c, width=w, anchor=a)
         sb = ttk.Scrollbar(f, orient="vertical", command=self.files_tree.yview)
         self.files_tree.configure(yscrollcommand=sb.set)
@@ -375,8 +416,8 @@ class App:
         self._sort_state = ("frags", True)
 
     def _tab_options(self) -> None:
-        sf = ScrollFrame(self.nb)
-        self.nb.add(sf, text="Opções")
+        sf = ScrollFrame(self.nb.body)
+        self.nb.add(sf, "Opções", "gear")
         f = ttk.Frame(sf.inner, padding=(14, 12, 14, 12))
         f.pack(fill="both", expand=True)
         f.columnconfigure(0, weight=1)
@@ -392,6 +433,12 @@ class App:
             sf.note(f, text, r)
             r += 1
 
+        ttk.Checkbutton(f, text="Fechar a janela minimiza para a bandeja do sistema", variable=self.v_tray).grid(
+            row=r, column=0, columnspan=4, sticky="w")
+        r += 1
+        note("Ao clicar no X o programa continua rodando (inclusive uma análise ou desfragmentação em andamento) "
+             "e fica ao lado do relógio. Clique no ícone para abrir de novo; use o menu do ícone para sair. "
+             "Desmarcado, o X encerra o programa.")
         title("O que cada botão faz")
         for key in ("analyze", "defrag", "quick", "freespace"):
             name, text = MODE_HELP[key]
@@ -469,8 +516,8 @@ class App:
              "clicou em Parar).")
 
     def _tab_schedule(self) -> None:
-        sf = ScrollFrame(self.nb)
-        self.nb.add(sf, text="Agendamento")
+        sf = ScrollFrame(self.nb.body)
+        self.nb.add(sf, "Agendamento", "calendar")
         f = ttk.Frame(sf.inner, padding=(14, 12, 14, 12))
         f.pack(fill="both", expand=True)
         f.columnconfigure(0, weight=1)
@@ -496,8 +543,8 @@ class App:
         sf.note(f, "Remover apaga a tarefa com a frequência escolhida acima para a unidade selecionada.", 11, pady=(8, 0))
 
     def _tab_log(self) -> None:
-        f = ttk.Frame(self.nb, style="Panel.TFrame")
-        self.nb.add(f, text="Registro")
+        f = ttk.Frame(self.nb.body, style="Panel.TFrame")
+        self.nb.add(f, "Registro", "history")
         self.log = tk.Text(f, bg=C["panel"], fg=C["fg"], insertbackground=C["fg"], relief="flat", height=6,
                            font=("Consolas", 9), state="disabled", wrap="word", padx=8, pady=6)
         self.log.pack(fill="both", expand=True)
@@ -619,6 +666,9 @@ class App:
 
     def _handle(self, m: tuple) -> None:
         kind = m[0]
+        if kind == "tray":
+            self._tray_action(m[1])
+            return
         if kind == "progress":
             _, phase, done, total, msg = m
             label = PHASES.get(phase, phase)
@@ -630,6 +680,7 @@ class App:
                 self.v_status.set("%s: %d/%d  %s" % (label, done, total, msg[-70:]))
             else:
                 self.v_status.set("%s: %d arquivos…" % (label, done))
+            self._tray_title(self.v_status.get())
         elif kind == "analysis":
             _, res, rep = m
             self._show_result(res, rep)
@@ -645,6 +696,9 @@ class App:
             self.progress.configure(mode="determinate", value=0)
             self._set_busy(False)
             self.refresh_drives_keep()
+            if self._hidden and self.tray:
+                self.tray.set_title("Unfrag Dark")
+                self.tray.notify(self.v_status.get()[:200] or "Operação concluída.")
             if self.v_shutdown.get() and self.engine and not self.cancel.is_set():
                 self._log("Desligando em 60 s…")
                 shutdown_soon(60)
@@ -674,6 +728,7 @@ class App:
         else:
             self.v_status.set("Análise concluída em %.1f s: %.1f%% fragmentado, %d arquivos." % (r.seconds, r.fragmentation_percent, r.files))
             self._log("Análise em %.1f s: %.1f%% fragmentado, %d de %d arquivos fragmentados" % (r.seconds, r.fragmentation_percent, r.fragmented_files, r.files))
+        self.v_last.set("Última análise: " + time.strftime("%d/%m/%Y %H:%M"))
         self._draw_map()
         self._fill_files()
 
@@ -685,13 +740,15 @@ class App:
                           text="Selecione uma unidade e clique em Analisar")
             return
         w, h = max(c.winfo_width(), 50), max(c.winfo_height(), 50)
-        size, gap = 11, 2
-        cols, rows = max(1, w // (size + gap)), max(1, h // (size + gap))
+        size, gap = 13, 2
+        cols, rows = max(1, (w + gap) // (size + gap)), max(1, (h + gap) // (size + gap))
         eng = self.engine
-        cells = diskmap.build_map(eng.backend.total_clusters, eng.free.runs(), eng.files.values(), cols * rows)
+        cells = diskmap.build_map(eng.backend.total_clusters, eng.free.runs(), eng.files.values(), cols * rows,
+                                  shade=True)
         self.cells = cells
+        step = size + gap
         for i, st in enumerate(cells):
-            x, y = (i % cols) * (size + gap), (i // cols) * (size + gap)
+            x, y = (i % cols) * step, (i // cols) * step
             c.create_rectangle(x, y, x + size, y + size, fill=CELL_COLORS[st], outline="")
 
     def _fill_files(self) -> None:
@@ -705,6 +762,8 @@ class App:
     def _render_files(self) -> None:
         col, desc = self._sort_state
         idx = {"frags": 0, "size": 1, "path": 2}[col]
+        for k, base in self._file_heads.items():
+            self.files_tree.heading(k, text=(base + ("  \u25bc" if desc else "  \u25b2")) if k == col else base)
         rows = sorted(getattr(self, "_file_rows", []), key=lambda r: r[idx], reverse=desc)[:5000]
         self.files_tree.delete(*self.files_tree.get_children())
         for fr, size, path in rows:
@@ -780,12 +839,71 @@ class App:
         save_settings(dict(force_ssd=self.v_force_ssd.get(), skip_battery=self.v_battery.get(),
                            move_large_mb=int(self.v_large.get() or 0), move_exts=self.v_exts.get(),
                            min_frag=float(self.v_minfrag.get() or 0), exclude=self.v_exclude.get(),
-                           threads=self._threads(), full_rescan=self.v_fullscan.get()))
+                           threads=self._threads(), full_rescan=self.v_fullscan.get(),
+                           close_to_tray=self.v_tray.get()))
+
+    # --- bandeja do sistema ------------------------------------------------
+    def _is_busy(self) -> bool:
+        return bool(self.worker and self.worker.is_alive())
+
+    def _post_tray(self, action: str) -> None:  # chamado na thread do pystray: só enfileira
+        self.q.put(("tray", action))
+
+    def _tray_title(self, text: str) -> None:
+        if self._hidden and self.tray and time.time() - self._last_tray_title > 1.0:
+            self._last_tray_title = time.time()
+            self.tray.set_title("Unfrag Dark - " + text)
+
+    def _tray_action(self, action: str) -> None:
+        if action == "show":
+            self.restore()
+        elif action == "stop":
+            self.stop()
+        elif action == "quit":
+            self.quit_app()
+
+    def hide_to_tray(self) -> bool:
+        """Esconde a janela e mostra o ícone na bandeja. Só esconde se o ícone foi criado,
+        para nunca deixar o programa sem janela e sem ícone."""
+        if self.tray is None:
+            self.tray = Tray("Unfrag Dark", resource_path("icon.png"), self._post_tray, self._is_busy)
+        if not self.tray.start():
+            return False
+        self._persist()
+        self._hidden = True
+        self.root.withdraw()
+        if not self._tray_hint_shown:
+            self._tray_hint_shown = True
+            self.root.after(700, lambda: self.tray and self.tray.notify(
+                "O Unfrag Dark continua em execução na bandeja do sistema. Clique no ícone para abrir."))
+        return True
+
+    def restore(self) -> None:
+        if self.tray:
+            self.tray.stop()
+        self._hidden = False
+        self.root.deiconify()
+        try:
+            self.root.state("normal")
+        except tk.TclError:
+            pass
+        self.root.lift()
+        self.root.focus_force()
 
     def on_close(self) -> None:
+        if self.v_tray.get() and not self._hidden and self.hide_to_tray():
+            return
+        self.quit_app()
+
+    def quit_app(self) -> None:
         self.cancel.set()
         self._persist()
-        self.root.destroy()
+        if self.tray:
+            self.tray.stop()
+        try:
+            self.root.destroy()
+        except tk.TclError:  # "Sair" da bandeja clicado duas vezes
+            pass
 
 
 def run_gui(demo: bool = False) -> int:

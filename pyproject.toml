@@ -4,10 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unfrag-dark"
-version = "0.1.4"
+version = "0.1.5"
 description = "Desfragmentador NTFS de código aberto com tema escuro"
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = [
+  "pystray>=0.19.5; sys_platform == 'win32'",
+  "Pillow>=10.0; sys_platform == 'win32'",
+]
 license = { text = "MIT" }
 classifiers = [
   "Operating System :: Microsoft :: Windows",
