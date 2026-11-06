@@ -10,21 +10,26 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
-from . import __version__, diskmap, scheduler
+from . import __version__, diskmap, palette, scheduler
 from .backends import IS_WINDOWS, list_drives, open_volume
 from .engine import Cancelled, Engine, Options, Report, SsdSkipped
 from .model import AnalysisResult, DriveInfo
 from .single import SingleInstance, show_already_running
 from .system import MAX_THREADS, auto_threads, fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
 from .tray import Tray
+from . import widgets
 from .widgets import Card, PillButton, TabView, draw_icon, rounded_points
 
-C = dict(bg="#060b1d", panel="#0b1633", panel2="#10204a", line="#1c3470", fg="#e8efff",
-         muted="#8da2cf", accent="#4cc3ff", accent2="#2c5fe0", ok="#3ecf8e", warn="#f5a524",
-         bad="#ef4444", glow="#12296a", edge="#2457c9", tab_sel="#0f2556", tab_hover="#0c1c44",
-         free="#5ac8fa", used="#2f7be8", used_full="#1f4fc4", frag="#ef4444", unmov="#fbd22b")
-CELL_COLORS = {diskmap.FREE: C["free"], diskmap.USED: C["used"], diskmap.USED_FULL: C["used_full"],
-               diskmap.FRAGMENTED: C["frag"], diskmap.UNMOVABLE: C["unmov"]}
+C: Dict[str, str] = palette.full(palette.DEFAULT_BASE)  # atualizado no lugar por palette.apply_palette
+
+widgets.THEME = C  # os botões em pílula leem as cores daqui
+
+
+def cell_colors() -> Dict[int, str]:
+    return {diskmap.FREE: C["free"], diskmap.USED: C["used"], diskmap.USED_FULL: C["used_full"],
+            diskmap.FRAGMENTED: C["frag"], diskmap.UNMOVABLE: C["unmov"]}
+
+
 PHASES = {"scan": "Analisando arquivos", "defrag": "Desfragmentando", "compact": "Compactando espaço livre",
           "toend": "Movendo arquivos grandes para o fim"}
 FONT = ("Segoe UI", 10)
@@ -94,8 +99,9 @@ def apply_theme(root: tk.Tk) -> None:
     s.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])  # sem borda do Treeview
     s.configure("Horizontal.TProgressbar", background=C["accent"], troughcolor=C["panel"],
                 bordercolor=C["bg"], lightcolor=C["accent"], darkcolor=C["accent"], borderwidth=0, thickness=4)
-    s.configure("TScrollbar", background="#1d3a86", troughcolor=C["panel"], arrowcolor=C["accent"],
-                bordercolor=C["panel"], lightcolor="#1d3a86", darkcolor="#1d3a86", relief="flat")
+    thumb = palette.mix(C["panel"], C["accent"], 0.3)
+    s.configure("TScrollbar", background=thumb, troughcolor=C["panel"], arrowcolor=C["accent"],
+                bordercolor=C["panel"], lightcolor=thumb, darkcolor=thumb, relief="flat")
     s.map("TScrollbar", background=[("active", C["accent2"])])
     s.configure("TPanedwindow", background=C["bg"])
     s.configure("TSeparator", background=C["line"])
@@ -161,6 +167,11 @@ class ToolTip:
     def _show(self) -> None:
         if self.tip:
             return
+        try:
+            if not self.widget.winfo_exists():
+                return
+        except tk.TclError:
+            return
         x = self.widget.winfo_rootx()
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
         self.tip = tw = tk.Toplevel(self.widget)
@@ -190,7 +201,7 @@ class ScrollFrame(ttk.Frame):
     def __init__(self, parent, bg=None):
         super().__init__(parent)
         bg = bg or C["panel"]
-        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, width=1, height=200)
         self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vbar.set)
         self.vbar.pack(side="right", fill="y")
@@ -258,9 +269,10 @@ class App:
         self._tray_hint_shown = False
         self._hidden = False
         self._last_tray_title = 0.0
+        self.base = palette.sanitize(self.settings.get("colors"))
+        palette.apply_palette(C, self.base)
         root.title("Unfrag Dark %s%s" % (__version__, "  [DEMO - discos simulados]" if self.demo else ""))
-        root.geometry("1280x820")
-        root.minsize(1040, 680)
+        self._setup_window()
         apply_theme(root)
         set_app_icon(root)
         self._vars()
@@ -269,6 +281,98 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(100, self._poll)
         root.after(50, lambda: _dark_titlebar(root))
+
+    # --- janela: tamanho/posição ------------------------------------------
+    def _setup_window(self) -> None:
+        """Tamanho inicial que cabe na tela (evita cortar a barra de baixo em telas pequenas) e
+        restauração da última posição/tamanho, sempre mantendo a janela visível."""
+        root = self.root
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.minsize(min(1180, sw - 20), min(640, sh - 80))
+        w = min(1280, sw - 40)
+        h = min(820, sh - 90)  # sobra espaço para a barra de tarefas e a barra de título
+        x, y = max(0, (sw - w) // 2), max(0, (sh - h) // 3)
+        saved = self.settings.get("window") or {}
+        try:
+            sw_, sh_, sx, sy = (int(saved[k]) for k in ("w", "h", "x", "y"))
+            if sw_ >= 600 and sh_ >= 400:
+                w, h = min(sw_, sw - 20), min(sh_, sh - 60)
+                x = min(max(sx, 0), max(0, sw - w - 10))   # nunca fora da tela
+                y = min(max(sy, 0), max(0, sh - h - 50))
+        except (KeyError, TypeError, ValueError):
+            pass
+        self._geom = (w, h, x, y)
+        self._save_job = None
+        root.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        if saved.get("zoomed"):
+            try:
+                root.state("zoomed")
+            except tk.TclError:
+                pass
+        root.bind("<Configure>", self._on_root_configure, add="+")
+
+    def _on_root_configure(self, e) -> None:
+        if e.widget is not self.root:
+            return
+        if self.root.state() == "normal":
+            self._geom = (self.root.winfo_width(), self.root.winfo_height(), self.root.winfo_x(), self.root.winfo_y())
+        if self._save_job:
+            self.root.after_cancel(self._save_job)
+        # grava a posição pouco depois de parar de mexer: vale mesmo se o programa for morto
+        self._save_job = self.root.after(1500, self._persist)
+
+    def _window_state(self) -> dict:
+        w, h, x, y = self._geom
+        try:
+            zoomed = self.root.state() == "zoomed"
+        except tk.TclError:
+            zoomed = False
+        try:
+            sash = int(self.paned.sashpos(0))
+        except (tk.TclError, AttributeError):
+            sash = int(self.settings.get("window", {}).get("sash", 0) or 0)
+        return dict(w=w, h=h, x=x, y=y, zoomed=zoomed, sash=sash)
+
+    # --- cores -------------------------------------------------------------
+    def _pick_color(self, key: str) -> None:
+        from tkinter import colorchooser
+        _rgb, hexv = colorchooser.askcolor(color=self.base[key], title=palette.BASE_LABELS[key], parent=self.root)
+        if hexv:
+            self._set_base({**self.base, key: hexv})
+
+    def _pick_preset(self) -> None:
+        name = self.v_preset.get()
+        if name in palette.PRESETS:
+            self._set_base(dict(palette.PRESETS[name]))
+
+    def _set_base(self, base: dict) -> None:
+        self.base = palette.sanitize(base)
+        palette.apply_palette(C, self.base)
+        self.v_preset.set(palette.matching_preset(self.base))
+        self._persist()
+        self.root.after_idle(self._rebuild)  # não destrói o botão que acabou de ser clicado
+
+    def _rebuild(self) -> None:
+        """Refaz a interface com as cores novas, mantendo aba, seleção, mapa e estado de ocupado."""
+        tab = self.nb.current or 0
+        busy = self._is_busy()
+        prog = (str(self.progress["mode"]), float(self.progress["value"]), float(self.progress["maximum"]))
+        self.settings["window"] = self._window_state()  # guarda a largura do painel de unidades
+        for w in list(self.root.winfo_children()):
+            w.destroy()
+        apply_theme(self.root)
+        self._build()
+        self.refresh_drives_keep()
+        self.nb.select(tab)
+        self.root.after(60, self._set_sash)
+        self._set_busy(busy)
+        mode, value, maximum = prog
+        self.progress.configure(mode=mode, maximum=maximum, value=value)
+        if busy and mode == "indeterminate":
+            self.progress.start(12)
+        self._draw_map()
+        if self.engine:
+            self._fill_files()
 
     # --- variáveis ---------------------------------------------------------
     def _vars(self) -> None:
@@ -285,6 +389,7 @@ class App:
         self.v_exclude = tk.StringVar(value=s.get("exclude", ""))
         self.v_path = tk.StringVar(value="")
         self.v_tray = tk.BooleanVar(value=s.get("close_to_tray", True))
+        self.v_preset = tk.StringVar(value=palette.matching_preset(self.base))
         self.v_last = tk.StringVar(value="")
         self.v_status = tk.StringVar(value="Pronto.")
         self.v_sched_freq = tk.StringVar(value="semanal")
@@ -321,6 +426,18 @@ class App:
                                 text="Execute como Administrador para analisar e desfragmentar.")
                 warn.pack(fill="x")
 
+        bottom = ttk.Frame(self.root, style="Root.TFrame", padding=(18, 0, 18, 10))
+        bottom.pack(side="bottom", fill="x")
+        self.progress = ttk.Progressbar(bottom, mode="determinate")
+        self.progress.pack(fill="x", pady=(0, 6))
+        line = ttk.Frame(bottom, style="Root.TFrame")
+        line.pack(fill="x")
+        ttk.Label(line, textvariable=self.v_status, style="RootMuted.TLabel").pack(side="left")
+        ttk.Label(line, textvariable=self.v_last, style="RootMuted.TLabel").pack(side="right")
+        clock = tk.Canvas(line, width=22, height=22, bg=C["bg"], highlightthickness=0)
+        draw_icon(clock, "clock", 11, 11, C["accent"])
+        clock.pack(side="right", padx=(0, 6))
+
         paned = ttk.Panedwindow(self.root, orient="horizontal")
         paned.pack(fill="both", expand=True, padx=18, pady=(0, 6))
         self.paned = paned
@@ -334,7 +451,7 @@ class App:
         ttk.Label(li, text="UNIDADES", foreground=C["fg"], font=("Segoe UI Semibold", 9)).pack(anchor="w", padx=6, pady=(2, 6))
         cols = ("drive", "label", "kind", "size", "free")
         self.tree = ttk.Treeview(li, columns=cols, show="headings", selectmode="browse", height=8)
-        for c, t, w in (("drive", "Un.", 44), ("label", "Nome", 90), ("kind", "Tipo", 70),
+        for c, t, w in (("drive", "Un.", 44), ("label", "Nome", 86), ("kind", "Tipo", 62),
                         ("size", "Tamanho", 84), ("free", "Livre", 84)):
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor="center")
@@ -364,7 +481,7 @@ class App:
 
         mcard = self._card(right, pad=(12, 10))
         mcard.pack(fill="both", expand=True, pady=(8, 0))
-        self.canvas = tk.Canvas(mcard.inner, bg=C["panel"], highlightthickness=0, height=150)
+        self.canvas = tk.Canvas(mcard.inner, bg=C["panel"], highlightthickness=0, height=110)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda e: self._draw_map())
         self.canvas.bind("<Button-1>", self._on_map_click)
@@ -391,21 +508,16 @@ class App:
         self._tab_schedule()
         self._tab_log()
 
-        bottom = ttk.Frame(self.root, style="Root.TFrame", padding=(18, 0, 18, 10))
-        bottom.pack(fill="x")
-        self.progress = ttk.Progressbar(bottom, mode="determinate")
-        self.progress.pack(fill="x", pady=(0, 6))
-        line = ttk.Frame(bottom, style="Root.TFrame")
-        line.pack(fill="x")
-        ttk.Label(line, textvariable=self.v_status, style="RootMuted.TLabel").pack(side="left")
-        ttk.Label(line, textvariable=self.v_last, style="RootMuted.TLabel").pack(side="right")
-        clock = tk.Canvas(line, width=22, height=22, bg=C["bg"], highlightthickness=0)
-        draw_icon(clock, "clock", 11, 11, C["accent"])
-        clock.pack(side="right", padx=(0, 6))
 
-    def _set_sash(self) -> None:
+    def _set_sash(self, tries: int = 25) -> None:
         try:
-            self.paned.sashpos(0, 400)
+            total = self.paned.winfo_width()
+            if total < 600 and tries > 0:  # ainda não foi medido: tenta de novo daqui a pouco
+                self.root.after(40, lambda: self._set_sash(tries - 1))
+                return
+            saved = int((self.settings.get("window") or {}).get("sash") or 0)
+            pos = saved if 260 <= saved <= max(260, total - 420) else 392
+            self.paned.sashpos(0, pos)
         except tk.TclError:
             pass
 
@@ -423,8 +535,8 @@ class App:
         cols = ("frags", "size", "path", "blk")
         self._file_heads = {"frags": "Fragmentos", "size": "Tamanho", "path": "Localização", "blk": "Neste bloco"}
         self.files_tree = ttk.Treeview(body, columns=cols, show="headings", height=6)
-        for c, t, w, a in (("frags", "Fragmentos", 110, "center"), ("size", "Tamanho", 110, "center"),
-                           ("path", "Localização", 600, "w"), ("blk", "Neste bloco", 170, "center")):
+        for c, t, w, a in (("frags", "Fragmentos", 95, "center"), ("size", "Tamanho", 90, "center"),
+                           ("path", "Localização", 260, "w"), ("blk", "Neste bloco", 130, "center")):
             self.files_tree.heading(c, text=t, anchor="center" if a == "center" else "w", command=lambda col=c: self._sort_files(col))
             self.files_tree.column(c, width=w, anchor=a)
         self.files_tree.configure(displaycolumns=("frags", "size", "path"))
@@ -466,6 +578,36 @@ class App:
         note("Ao clicar no X o programa continua rodando (inclusive uma análise ou desfragmentação em andamento) "
              "e fica ao lado do relógio. Clique no ícone para abrir de novo; use o menu do ícone para sair. "
              "Desmarcado, o X encerra o programa.")
+        ttk.Separator(f).grid(row=r, column=0, columnspan=4, sticky="we", pady=(4, 12))
+        r += 1
+        title("Cores do app")
+        note("Escolha um tema pronto ou ajuste cada cor. A mudança é aplicada na hora e fica salva "
+             "para a próxima vez que abrir o programa.")
+        top = ttk.Frame(f)
+        top.grid(row=r, column=0, columnspan=4, sticky="we", pady=(0, 8))
+        ttk.Label(top, text="Tema pronto:").pack(side="left")
+        cb = ttk.Combobox(top, state="readonly", textvariable=self.v_preset, width=16,
+                          values=list(palette.PRESETS) + ["Personalizado"])
+        cb.pack(side="left", padx=8)
+        cb.bind("<<ComboboxSelected>>", lambda e: self._pick_preset())
+        ttk.Button(top, text="Restaurar padrão", command=lambda: self._set_base(dict(palette.DEFAULT_BASE))).pack(
+            side="left", padx=(4, 0))
+        r += 1
+        grid = ttk.Frame(f)
+        grid.grid(row=r, column=0, columnspan=4, sticky="we", pady=(0, 6))
+        for i, (key, label) in enumerate(palette.BASE_LABELS.items()):
+            cell = ttk.Frame(grid)
+            cell.grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 28), pady=3)
+            sw = tk.Canvas(cell, width=34, height=22, bg=C["panel"], highlightthickness=0, cursor="hand2")
+            sw.create_polygon(rounded_points(1, 1, 33, 21, 7), smooth=True, fill=self.base[key], outline=C["edge"])
+            sw.pack(side="left", padx=(0, 8))
+            sw.bind("<Button-1>", lambda e, k=key: self._pick_color(k))
+            ttk.Label(cell, text=label, width=20).pack(side="left")
+            ttk.Button(cell, text=self.base[key].upper(), width=9, command=lambda k=key: self._pick_color(k)).pack(
+                side="left")
+        r += 1
+        ttk.Separator(f).grid(row=r, column=0, columnspan=4, sticky="we", pady=(8, 12))
+        r += 1
         title("O que cada botão faz")
         for key in ("analyze", "defrag", "quick", "freespace"):
             name, text = MODE_HELP[key]
@@ -777,9 +919,10 @@ class App:
         self.cells = cells
         step = size + gap
         self._map_geom = (cols, step, size)
+        colors = cell_colors()
         for i, st in enumerate(cells):
             x, y = (i % cols) * step, (i // cols) * step
-            c.create_rectangle(x, y, x + size, y + size, fill=CELL_COLORS[st], outline="")
+            c.create_rectangle(x, y, x + size, y + size, fill=colors[st], outline="")
         if self.sel_lo is not None:  # a janela mudou de tamanho: acha o bloco que contém o mesmo cluster
             per = eng.backend.total_clusters / len(cells)
             self._select_cell(min(len(cells) - 1, int(self.sel_lo / per)), switch_tab=False)
@@ -959,7 +1102,8 @@ class App:
                            move_large_mb=int(self.v_large.get() or 0), move_exts=self.v_exts.get(),
                            min_frag=float(self.v_minfrag.get() or 0), exclude=self.v_exclude.get(),
                            threads=self._threads(), full_rescan=self.v_fullscan.get(),
-                           close_to_tray=self.v_tray.get()))
+                           close_to_tray=self.v_tray.get(), colors=self.base,
+                           window=self._window_state()))
 
     # --- bandeja do sistema ------------------------------------------------
     def _is_busy(self) -> bool:

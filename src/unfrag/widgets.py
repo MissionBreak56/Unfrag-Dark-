@@ -57,54 +57,57 @@ def draw_icon(c: tk.Canvas, kind: str, cx: float, cy: float, color: str, tag: st
 
 # --- cartão ----------------------------------------------------------------------------------
 
-class Card(tk.Canvas):
-    """Cartão com cantos arredondados, borda azul com brilho e conteúdo em `.inner`."""
+class Card(tk.Frame):
+    """Cartão com cantos arredondados e borda azul com brilho; o conteúdo vai em `.inner`.
+
+    É um Frame comum (o tamanho vem do conteúdo, pelo próprio Tk) com um Canvas desenhado por
+    trás. Assim o cartão sempre acompanha o conteúdo, mesmo quando um texto muda e cresce."""
 
     def __init__(self, parent, fill: str, glow: str, edge: str, bg: str, radius: int = 12,
                  pad=(12, 10)):
-        super().__init__(parent, bg=bg, highlightthickness=0, bd=0, height=10, width=10)
-        self.fill, self.glow, self.edge, self.radius, self.pad = fill, glow, edge, radius, pad
+        super().__init__(parent, bg=bg, bd=0, highlightthickness=0)
+        self.fill, self.glow, self.edge, self.radius = fill, glow, edge, radius
+        self._back = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self._back.place(x=0, y=0, relwidth=1, relheight=1)
         self.inner = tk.Frame(self, bg=fill)
-        self._win = self.create_window(pad[0], pad[1], window=self.inner, anchor="nw")
-        self.bind("<Configure>", self._on_size)
-        self.inner.bind("<Configure>", self._on_inner)
-
-    def _on_inner(self, _e=None) -> None:
-        self._layout()
+        self.inner.pack(fill="both", expand=True, padx=pad[0], pady=pad[1])
+        self._back.bind("<Configure>", self._on_size)
 
     def _on_size(self, e) -> None:
-        self.delete("bg")
+        c = self._back
+        c.delete("all")
         r = self.radius
-        self.create_polygon(rounded_points(1, 1, e.width - 2, e.height - 2, r), smooth=True, fill=self.fill,
-                            outline=self.glow, width=3, tags="bg")
-        self.create_polygon(rounded_points(2, 2, e.width - 3, e.height - 3, r), smooth=True, fill=self.fill,
-                            outline=self.edge, width=1, tags="bg")
-        self.tag_lower("bg")
-        self._layout()
-
-    def _layout(self) -> None:
-        """O tamanho pedido pelo cartão vem do tamanho *pedido* pelo conteúdo (independente do
-        tamanho atual); se o cartão for maior, o conteúdo se estica para preenchê-lo."""
-        px, py = self.pad
-        rw, rh = self.inner.winfo_reqwidth(), self.inner.winfo_reqheight()
-        self.configure(width=rw + 2 * px, height=rh + 2 * py)
-        self.itemconfigure(self._win, width=max(rw, self.winfo_width() - 2 * px),
-                           height=max(rh, self.winfo_height() - 2 * py))
+        c.create_polygon(rounded_points(1, 1, e.width - 2, e.height - 2, r), smooth=True, fill=self.fill,
+                         outline=self.glow, width=3)
+        c.create_polygon(rounded_points(2, 2, e.width - 3, e.height - 3, r), smooth=True, fill=self.fill,
+                         outline=self.edge, width=1)
 
 
 # --- botão em pílula ------------------------------------------------------------------------
 
-class PillButton(tk.Canvas):
-    """Botão arredondado. Aceita configure(state="disabled"/"normal")."""
+THEME: Dict[str, str] = {}  # preenchido pelo gui com o dicionário de cores atual (atualizado no lugar)
 
-    KINDS = {  # fill, hover, edge, text
-        "normal": ("#0f1f46", "#18336f", "#22448f", "#e8efff"),
-        "soft": ("#16336e", "#1f4590", "#2d5bc0", "#e8efff"),
-        "accent": ("#2563eb", "#3b78f5", "#5b93ff", "#ffffff"),
-        "danger": ("#e5372f", "#f2514a", "#ff7a72", "#ffffff"),
-    }
-    OFF = {"normal": ("#0a1330", "#17274f", "#5d6d93"), "soft": ("#0a1330", "#17274f", "#5d6d93"),
-           "accent": ("#0a1330", "#17274f", "#5d6d93"), "danger": ("#2a1420", "#4a2230", "#8a6670")}
+
+class PillButton(tk.Canvas):
+    """Botão arredondado. Aceita configure(state="disabled"/"normal"). As cores vêm do tema atual."""
+
+    def _colors(self):
+        t = THEME
+        if not t:  # uso fora do app
+            return {"normal": ("#0f1f46", "#18336f", "#22448f", "#e8efff"),
+                    "soft": ("#16336e", "#1f4590", "#2d5bc0", "#e8efff"),
+                    "danger": ("#e5372f", "#f2514a", "#ff7a72", "#ffffff")}[self._kind], \
+                   ("#0a1330", "#17274f", "#5d6d93")
+        if self._kind == "danger":
+            on = ("#e5372f", "#f2514a", "#ff7a72", "#ffffff")
+            off = (mix(t["panel"], "#e5372f", 0.18), mix(t["panel"], "#e5372f", 0.3), mix(t["fg"], t["panel"], 0.6))
+        elif self._kind == "soft":
+            on = (t["line"], mix(t["line"], t["accent"], 0.22), t["edge"], t["fg"])
+            off = (t["panel"], t["line"], t["muted"])
+        else:
+            on = (t["panel2"], t["line"], t["edge"], t["fg"])
+            off = (t["panel"], t["line"], t["muted"])
+        return on, off
 
     def __init__(self, parent, text: str, command: Optional[Callable] = None, kind: str = "normal",
                  bg: str = "#070d20", font=("Segoe UI", 10), padx: int = 18, height: int = 34,
@@ -156,9 +159,9 @@ class PillButton(tk.Canvas):
         w, h = self.winfo_width(), self.winfo_height()
         if w < 4 or h < 4:
             return
-        fill, hov, edge, fg = self.KINDS[self._kind]
+        (fill, hov, edge, fg), (ofill, oedge, ofg) = self._colors()
         if self._state != "normal":
-            fill, edge, fg = self.OFF[self._kind]
+            fill, edge, fg = ofill, oedge, ofg
         elif self._hover:
             fill = hov
         self.create_polygon(rounded_points(1, 1, w - 2, h - 2, 9), smooth=True, fill=fill, outline=edge, width=1)

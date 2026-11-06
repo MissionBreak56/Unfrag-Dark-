@@ -84,6 +84,11 @@ unfrag --demo defrag C: --mode freespace
   (300 mil arquivos, só CPU em Python, sem E/S) a análise caiu de ~2,7 s para ~1,3 s.
 * Objetos ctypes (buffer, `c_int64`, `DWORD`, `byref`) são reaproveitados por thread.
 * A janela e a CLI mostram o tempo da análise.
+* **Cores personalizáveis** (Opções → Cores do app): temas prontos (Azul, Grafite, Esmeralda, Violeta) ou cada
+  cor individual (blocos livres/em uso/fragmentados/não movíveis, fundo, cartões, destaque e texto). Aplica na
+  hora e fica salvo. Os blocos livres são cinza por padrão.
+* **Posição da janela:** o programa lembra tamanho, posição e se estava maximizado (sempre dentro da tela), e a
+  janela inicial se ajusta a telas pequenas.
 * **Instância única:** abrir o programa de novo com ele já aberto (inclusive escondido na bandeja) mostra o
   aviso "O Unfrag Dark já está aberto" e traz a janela existente para a frente.
 * **Detalhe do bloco:** clique em um quadrado do mapa para ver qual bloco é (número, clusters, posição no
