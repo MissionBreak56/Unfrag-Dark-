@@ -84,6 +84,14 @@ unfrag --demo defrag C: --mode freespace
   (300 mil arquivos, só CPU em Python, sem E/S) a análise caiu de ~2,7 s para ~1,3 s.
 * Objetos ctypes (buffer, `c_int64`, `DWORD`, `byref`) são reaproveitados por thread.
 * A janela e a CLI mostram o tempo da análise.
+* **Leitura direta da MFT** (padrão; `--no-mft` ou Opções desligam): a análise do volume inteiro lê a MFT do NTFS
+  em sequência em vez de abrir cada arquivo. No Windows de teste do CI (1,18 milhão de arquivos) levou 20 s contra
+  9 min 24 s do método clássico, com os mesmos extents. Se algo não puder ser lido com segurança, aquele arquivo (ou
+  o volume todo) volta ao método clássico.
+* **Iniciar com o Windows** (Opções): tarefa agendada de logon com privilégios altos, sem pedir confirmação a cada
+  login, abre minimizado na bandeja. O ícone da bandeja muda de cor (laranja = trabalhando, verde = concluído,
+  vermelho = erro) e as tarefas agendadas avisam ao terminar.
+* **Atualizações:** o programa verifica sozinho se há versão nova no GitHub e mostra um aviso com o botão Baixar.
 * **Cores personalizáveis** (Opções → Cores do app): temas prontos (Azul, Grafite, Esmeralda, Violeta) ou cada
   cor individual (blocos livres/em uso/fragmentados/não movíveis, fundo, cartões, destaque e texto). Aplica na
   hora e fica salvo. Os blocos livres são cinza por padrão.

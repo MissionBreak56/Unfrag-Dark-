@@ -306,8 +306,8 @@ def test_update_messages(app):
 def test_mft_option_persists_and_reaches_backend(tmp_path, monkeypatch):
     a = _new_app(tmp_path, monkeypatch)
     try:
-        assert a.v_mft.get() is False
-        a.v_mft.set(True)
+        assert a.v_mft.get() is True  # padrão: ligado
+        a.v_mft.set(False)
         seen = {}
         orig = gui.open_volume
 
@@ -318,11 +318,11 @@ def test_mft_option_persists_and_reaches_backend(tmp_path, monkeypatch):
         monkeypatch.setattr(gui, "open_volume", spy)
         a.start("analyze")
         assert pump(a, lambda: bool(a.v_last.get()))
-        assert seen["vol"].use_mft is True
+        assert seen["vol"].use_mft is False
         a.quit_app()
         b = _new_app(tmp_path, monkeypatch)
         try:
-            assert b.v_mft.get() is True
+            assert b.v_mft.get() is False
         finally:
             b.quit_app()
     finally:

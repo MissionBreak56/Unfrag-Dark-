@@ -470,7 +470,7 @@ class App:
         self.v_exclude = tk.StringVar(value=s.get("exclude", ""))
         self.v_path = tk.StringVar(value="")
         self.v_tray = tk.BooleanVar(value=s.get("close_to_tray", True))
-        self.v_mft = tk.BooleanVar(value=bool(s.get("use_mft", False)))
+        self.v_mft = tk.BooleanVar(value=bool(s.get("use_mft", True)))
         self.v_startup = tk.BooleanVar(value=False)  # estado real vem da tarefa agendada (consultada em segundo plano)
         self.v_updates = tk.BooleanVar(value=bool(s.get("check_updates", True)))
         self.v_update_msg = tk.StringVar(value="")
@@ -669,11 +669,12 @@ class App:
         ttk.Separator(f).grid(row=r, column=0, columnspan=4, sticky="we", pady=(4, 12))
         r += 1
         title("Desempenho, sistema e atualizações")
-        ttk.Checkbutton(f, text="Ler a MFT do NTFS para analisar bem mais rápido (experimental)",
+        ttk.Checkbutton(f, text="Ler a MFT do NTFS para analisar bem mais rápido (recomendado)",
                         variable=self.v_mft).grid(row=r, column=0, columnspan=4, sticky="w")
         r += 1
-        note("Só vale para a análise do volume inteiro. Se a MFT não puder ser lida, o programa usa "
-             "sozinho o método clássico e registra o motivo no Registro.")
+        note("Só vale para a análise do volume inteiro (em um teste com 1,1 milhão de arquivos, de 9 minutos "
+             "para 20 segundos). Se a MFT não puder ser lida, o programa usa sozinho o método clássico e "
+             "registra o motivo no Registro.")
         st = ttk.Checkbutton(f, text="Iniciar com o Windows, minimizado na bandeja", variable=self.v_startup,
                              command=self._toggle_startup)
         st.grid(row=r, column=0, columnspan=4, sticky="w")

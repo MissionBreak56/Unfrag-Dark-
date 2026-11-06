@@ -29,13 +29,18 @@ FAILURES = []
 SUMMARY = []
 
 
+def esc(msg: str) -> str:
+    return msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+
+
 def notice(title: str, msg: str) -> None:
-    print("::notice title=%s::%s" % (title, msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")), flush=True)
+    """Só registra e imprime: o GitHub limita as anotações (10 por passo), então o resumo sai todo junto no fim."""
+    print("%s: %s" % (title, msg), flush=True)
     SUMMARY.append("%s: %s" % (title, msg))
 
 
 def fail(title: str, msg: str) -> None:
-    print("::error title=%s::%s" % (title, msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")), flush=True)
+    print("::error title=%s::%s" % (title, esc(msg)), flush=True)
     FAILURES.append("%s: %s" % (title, msg))
 
 
@@ -219,6 +224,7 @@ def main() -> int:
     shutil.rmtree(TESTDIR, ignore_errors=True)
     print("\n===== RESUMO =====")
     print("\n".join(SUMMARY))
+    print("::notice title=Resumo da validacao::%s" % esc("\n".join(l[:600] for l in SUMMARY)), flush=True)
     if FAILURES:
         print("\n===== FALHAS =====")
         print("\n".join(FAILURES))

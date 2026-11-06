@@ -203,13 +203,13 @@ def cmd_gui(args) -> int:
 
 
 def _use_mft(args) -> bool:
-    """--mft liga, --no-mft desliga; sem nenhum dos dois vale a configuração salva (ou UNFRAG_MFT=1)."""
+    """--mft liga, --no-mft desliga; sem nenhum dos dois vale UNFRAG_MFT=0/1 ou a configuração salva (padrão: ligado)."""
     if getattr(args, "mft", None) is not None:
         return bool(args.mft)
     if os.environ.get("UNFRAG_MFT") in ("0", "1"):
         return os.environ["UNFRAG_MFT"] == "1"
     from .system import load_settings
-    return bool(load_settings().get("use_mft", False))
+    return bool(load_settings().get("use_mft", True))
 
 
 def _mft_arg(parser: argparse.ArgumentParser) -> None:

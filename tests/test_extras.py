@@ -129,3 +129,20 @@ def test_scheduler_command_includes_notify():
     from unfrag import scheduler
     args = scheduler.build_create_args("C", "quick", "weekly", "03:00", [])
     assert "--notify" in " ".join(args)
+
+
+def test_unopenable_files_are_skipped_not_failed():
+    """Com a leitura da MFT aparecem arquivos travados que o método clássico já marcava como inacessíveis:
+    na hora de mover, "não abre" tem que virar "ignorado", nunca "falha" (falha muda o código de saída)."""
+    from unfrag.backends import open_volume
+    from unfrag.engine import Engine, Options
+    vol = open_volume("C", demo=True, delay=0.0)
+    try:
+        eng = Engine(vol)
+        vol.get_file = lambda path: None  # nenhum arquivo abre
+        rep = eng.defragment(Options(mode="defrag"))
+        assert rep.failed == []
+        assert rep.skipped and all("inacessível" in why for _p, why in rep.skipped)
+        assert rep.defragmented == 0
+    finally:
+        vol.close()

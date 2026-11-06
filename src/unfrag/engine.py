@@ -287,7 +287,11 @@ class Engine:
         # confere o estado REAL do arquivo: outro programa (ou outro nome do mesmo arquivo)
         # pode tê-lo movido desde a análise
         fresh = self.backend.get_file(f.path)
-        if fresh is not None and _signature(fresh) != _signature(f):
+        if fresh is None:
+            # não dá para abrir agora (em uso, sem permissão ou apagado): não é uma falha, só ficou de fora
+            report.skipped.append((f.path, "inacessível (em uso, sem permissão ou removido)"))
+            return False
+        if _signature(fresh) != _signature(f):
             self._resync(f.path)
             report.skipped.append((f.path, "o arquivo mudou durante a operação"))
             return False
