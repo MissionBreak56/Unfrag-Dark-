@@ -202,7 +202,9 @@ def test_preset_and_restore_default(app):
 def test_window_position_saved_and_restored(tmp_path, monkeypatch):
     a = _new_app(tmp_path, monkeypatch)
     try:
-        a.root.geometry("1250x700+37+21")
+        sw, sh = a.root.winfo_screenwidth(), a.root.winfo_screenheight()
+        want_w, want_h = min(1250, sw - 40), min(700, sh - 90)  # cabe em qualquer tela (o CI do Windows é 1024x768)
+        a.root.geometry("%dx%d+37+21" % (want_w, want_h))
         for _ in range(30):
             a.root.update()
             time.sleep(0.01)
@@ -210,7 +212,7 @@ def test_window_position_saved_and_restored(tmp_path, monkeypatch):
         b = _new_app(tmp_path, monkeypatch)
         try:
             w, h, x, y = b._geom
-            assert (w, h) == (1250, 700) and abs(x - 37) <= 20 and abs(y - 21) <= 40
+            assert (w, h) == (want_w, want_h) and abs(x - 37) <= 20 and abs(y - 21) <= 40
         finally:
             b.quit_app()
     finally:
@@ -234,4 +236,4 @@ def test_saved_window_is_clamped_to_screen(tmp_path, monkeypatch):
 def test_default_window_fits_small_screen(app):
     sw, sh = app.root.winfo_screenwidth(), app.root.winfo_screenheight()
     w, h, _x, _y = app._geom
-    assert w <= sw - 40 + 1 and h <= sh - 90 + 1
+    assert w <= sw - 40 and h <= sh - 90

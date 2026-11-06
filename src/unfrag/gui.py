@@ -288,7 +288,7 @@ class App:
         restauração da última posição/tamanho, sempre mantendo a janela visível."""
         root = self.root
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        root.minsize(min(1180, sw - 20), min(640, sh - 80))
+        root.minsize(min(1180, sw - 40), min(640, sh - 90))  # nunca maior que a janela inicial
         w = min(1280, sw - 40)
         h = min(820, sh - 90)  # sobra espaço para a barra de tarefas e a barra de título
         x, y = max(0, (sw - w) // 2), max(0, (sh - h) // 3)
