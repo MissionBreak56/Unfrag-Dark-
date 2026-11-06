@@ -10,12 +10,13 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
-from . import __version__, diskmap, palette, scheduler
+from . import __version__, diskmap, palette, scheduler, startup, updater
 from .backends import IS_WINDOWS, list_drives, open_volume
 from .engine import Cancelled, Engine, Options, Report, SsdSkipped
 from .model import AnalysisResult, DriveInfo
 from .single import SingleInstance, show_already_running
-from .system import MAX_THREADS, auto_threads, fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
+from .system import load_last_run, MAX_THREADS, auto_threads, fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
+from .resources import resource_path
 from .tray import Tray
 from . import widgets
 from .widgets import Card, PillButton, TabView, draw_icon, rounded_points
@@ -124,13 +125,6 @@ MODE_HELP = {
                   "final. Assim os próximos arquivos já são gravados sem fragmentar. É o mais "
                   "demorado e move muitos arquivos."),
 }
-
-
-def resource_path(name: str) -> str:
-    base = getattr(sys, "_MEIPASS", None)
-    if base:
-        return os.path.join(base, "unfrag", "assets", name)
-    return os.path.join(os.path.dirname(__file__), "assets", name)
 
 
 def set_app_icon(root: tk.Tk) -> None:
@@ -280,7 +274,92 @@ class App:
         self.refresh_drives()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(100, self._poll)
+        root.after(250, self._after_start)
         root.after(50, lambda: _dark_titlebar(root))
+
+    # --- início, atualizações e início com o Windows ----------------------------
+    def start_hidden(self) -> None:
+        """Usado por `gui --tray` (início com o Windows): fica só na bandeja; se não der, mostra a janela."""
+        self._tray_hint_shown = True
+        if not self.hide_to_tray():
+            self.root.deiconify()
+            self.root.after(60, self._set_sash)
+
+    def _after_start(self) -> None:
+        run = load_last_run()
+        if run.get("scheduled"):
+            self._log("Última execução agendada (%s): %s" % (run.get("when", "?"), run.get("message", "")))
+        if IS_WINDOWS and not self.demo:
+            threading.Thread(target=lambda: self.q.put(("startup_state", startup.is_enabled())), daemon=True).start()
+        if self.v_updates.get() and not self.demo and time.time() - float(self.settings.get("last_update_check") or 0) > 6 * 3600:
+            self.root.after(4000, lambda: self.check_updates(False))
+
+    def check_updates(self, manual: bool) -> None:
+        if manual:
+            self.v_update_msg.set("Verificando…")
+        def work() -> None:
+            self.q.put(("update", updater.status(__version__), manual))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_result(self, result: tuple, manual: bool) -> None:
+        kind, tag, url = result
+        if kind != "error":
+            self.settings["last_update_check"] = time.time()
+        if kind == "newer":
+            self.v_update_msg.set("Versão %s disponível." % tag)
+            if manual or tag != self.settings.get("ignored_version"):
+                self._update = (tag, url)
+                self._show_update_bar()
+                self._log("Nova versão disponível: %s (%s)" % (tag, url))
+                if self._hidden and self.tray:
+                    self.tray.notify("Nova versão %s disponível. Abra o Unfrag Dark para baixar." % tag, "Unfrag Dark")
+        elif kind == "current":
+            self.v_update_msg.set("Você está na versão mais recente (%s)." % __version__)
+        elif manual:
+            self.v_update_msg.set("Não foi possível verificar agora (sem internet?).")
+        self._persist()
+
+    def _show_update_bar(self) -> None:
+        if not self._update:
+            return
+        bar = getattr(self, "update_bar", None)
+        try:
+            if bar is not None and bar.winfo_exists():
+                bar.destroy()
+        except tk.TclError:
+            pass
+        tag, url = self._update
+        bar = tk.Frame(self.root, bg=palette.mix(C["panel"], C["accent"], 0.2), highlightthickness=1,
+                       highlightbackground=C["edge"])
+        tk.Label(bar, text="Nova versão %s disponível." % tag, bg=bar["bg"], fg=C["fg"], font=FONT,
+                 padx=12, pady=6).pack(side="left")
+        PillButton(bar, "Baixar", command=lambda: self._open_update(url), kind="soft", bg=bar["bg"], height=28,
+                   padx=14).pack(side="left", padx=4, pady=4)
+        PillButton(bar, "Ignorar esta versão", command=lambda: self._ignore_update(tag), kind="normal", bg=bar["bg"],
+                   height=28, padx=14).pack(side="left", padx=4, pady=4)
+        bar.pack(fill="x", padx=18, pady=(0, 8), before=self.paned)
+        self.update_bar = bar
+
+    def _open_update(self, url: str) -> None:
+        import webbrowser
+        webbrowser.open(url)
+
+    def _ignore_update(self, tag: str) -> None:
+        self.settings["ignored_version"] = tag
+        self._update = None
+        try:
+            self.update_bar.destroy()
+        except (AttributeError, tk.TclError):
+            pass
+        self._persist()
+
+    def _toggle_startup(self) -> None:
+        want = self.v_startup.get()
+
+        def work() -> None:
+            err = startup.enable() if want else startup.disable()
+            self.q.put(("startup_done", want, err))
+        threading.Thread(target=work, daemon=True).start()
 
     # --- janela: tamanho/posição ------------------------------------------
     def _setup_window(self) -> None:
@@ -373,6 +452,8 @@ class App:
         self._draw_map()
         if self.engine:
             self._fill_files()
+        if self._update:
+            self._show_update_bar()
 
     # --- variáveis ---------------------------------------------------------
     def _vars(self) -> None:
@@ -389,6 +470,13 @@ class App:
         self.v_exclude = tk.StringVar(value=s.get("exclude", ""))
         self.v_path = tk.StringVar(value="")
         self.v_tray = tk.BooleanVar(value=s.get("close_to_tray", True))
+        self.v_mft = tk.BooleanVar(value=bool(s.get("use_mft", False)))
+        self.v_startup = tk.BooleanVar(value=False)  # estado real vem da tarefa agendada (consultada em segundo plano)
+        self.v_updates = tk.BooleanVar(value=bool(s.get("check_updates", True)))
+        self.v_update_msg = tk.StringVar(value="")
+        self._update: Optional[tuple] = None  # (tag, url) de uma versão nova ainda não dispensada
+        self._tray_state_cur = "idle"
+        self._result_state = "done"
         self.v_preset = tk.StringVar(value=palette.matching_preset(self.base))
         self.v_last = tk.StringVar(value="")
         self.v_status = tk.StringVar(value="Pronto.")
@@ -579,6 +667,26 @@ class App:
              "e fica ao lado do relógio. Clique no ícone para abrir de novo; use o menu do ícone para sair. "
              "Desmarcado, o X encerra o programa.")
         ttk.Separator(f).grid(row=r, column=0, columnspan=4, sticky="we", pady=(4, 12))
+        r += 1
+        title("Desempenho, sistema e atualizações")
+        ttk.Checkbutton(f, text="Ler a MFT do NTFS para analisar bem mais rápido (experimental)",
+                        variable=self.v_mft).grid(row=r, column=0, columnspan=4, sticky="w")
+        r += 1
+        note("Só vale para a análise do volume inteiro. Se a MFT não puder ser lida, o programa usa "
+             "sozinho o método clássico e registra o motivo no Registro.")
+        st = ttk.Checkbutton(f, text="Iniciar com o Windows, minimizado na bandeja", variable=self.v_startup,
+                             command=self._toggle_startup)
+        st.grid(row=r, column=0, columnspan=4, sticky="w")
+        if not IS_WINDOWS or self.demo:
+            st.state(["disabled"])
+        r += 1
+        upd = ttk.Frame(f)
+        upd.grid(row=r, column=0, columnspan=4, sticky="we", pady=(6, 4))
+        ttk.Checkbutton(upd, text="Verificar atualizações ao iniciar", variable=self.v_updates).pack(side="left")
+        ttk.Button(upd, text="Verificar agora", command=lambda: self.check_updates(True)).pack(side="left", padx=12)
+        ttk.Label(upd, textvariable=self.v_update_msg, style="Muted.TLabel").pack(side="left")
+        r += 1
+        ttk.Separator(f).grid(row=r, column=0, columnspan=4, sticky="we", pady=(8, 12))
         r += 1
         title("Cores do app")
         note("Escolha um tema pronto ou ajuste cada cor. A mudança é aplicada na hora e fica salva "
@@ -786,6 +894,9 @@ class App:
                        force_ssd=self.v_force_ssd.get(), min_fragmentation=float(self.v_minfrag.get() or 0),
                        full_rescan=self.v_fullscan.get())
         self.cancel.clear()
+        self._use_mft = self.v_mft.get()  # lido aqui (thread da interface); a thread de trabalho só usa a cópia
+        self._result_state = "done"
+        self._tray_state("busy")
         self._set_busy(True)
         self.progress.configure(value=0, mode="indeterminate")
         self.progress.start(12)
@@ -802,6 +913,7 @@ class App:
             self.q.put(("error", "Não foi possível abrir %s: (%s)" % (letter, exc)))
             return
         vol.threads = threads
+        vol.use_mft = bool(getattr(self, "_use_mft", False))
         try:
             eng = Engine(vol, progress=prog, cancel=self.cancel)
             self.engine = eng
@@ -811,6 +923,10 @@ class App:
             else:
                 rep = eng.defragment(opts)
                 self.q.put(("analysis", rep.after, rep))
+            from .cli import _scan_method
+            method = _scan_method(vol)
+            if method:
+                self.q.put(("log", method))
         except SsdSkipped as exc:
             self.q.put(("info", "%s." % exc))
         except Cancelled:
@@ -852,19 +968,41 @@ class App:
             self._tray_title(self.v_status.get())
         elif kind == "analysis":
             _, res, rep = m
+            self._result_state = "error" if (rep and rep.failed) else "done"
             self._show_result(res, rep)
+        elif kind == "log":
+            self._log(m[1])
         elif kind == "info":
+            self._result_state = "idle"
             self.v_status.set(m[1])
             self._log(m[1])
         elif kind == "error":
+            self._result_state = "error"
             self.v_status.set(m[1])
             self._log(m[1])
-            messagebox.showerror("Unfrag Dark", m[1])
+            if self._hidden and self.tray:
+                self.tray.notify(m[1][:200], "Unfrag Dark - erro")
+            else:
+                messagebox.showerror("Unfrag Dark", m[1])
+        elif kind == "update":
+            self._on_update_result(*m[1:])
+        elif kind == "startup_state":
+            self.v_startup.set(bool(m[1]))
+        elif kind == "startup_done":
+            _, want, err = m
+            if err:
+                self.v_startup.set(not want)
+                self._log("Início com o Windows: %s" % err)
+                messagebox.showerror("Unfrag Dark", "Não foi possível %s o início com o Windows:\n%s" % (
+                    "ligar" if want else "desligar", err))
+            else:
+                self._log("Início com o Windows %s." % ("ligado" if want else "desligado"))
         elif kind == "done":
             self.progress.stop()
             self.progress.configure(mode="determinate", value=0)
             self._set_busy(False)
             self.refresh_drives_keep()
+            self._tray_state(self._result_state)
             if self._hidden and self.tray:
                 self.tray.set_title("Unfrag Dark")
                 self.tray.notify(self.v_status.get()[:200] or "Operação concluída.")
@@ -1103,6 +1241,9 @@ class App:
                            min_frag=float(self.v_minfrag.get() or 0), exclude=self.v_exclude.get(),
                            threads=self._threads(), full_rescan=self.v_fullscan.get(),
                            close_to_tray=self.v_tray.get(), colors=self.base,
+                           use_mft=self.v_mft.get(), check_updates=self.v_updates.get(),
+                           ignored_version=self.settings.get("ignored_version", ""),
+                           last_update_check=self.settings.get("last_update_check", 0),
                            window=self._window_state()))
 
     # --- bandeja do sistema ------------------------------------------------
@@ -1111,6 +1252,11 @@ class App:
 
     def _post_tray(self, action: str) -> None:  # chamado na thread do pystray: só enfileira
         self.q.put(("tray", action))
+
+    def _tray_state(self, state: str) -> None:
+        self._tray_state_cur = state
+        if self.tray:
+            self.tray.set_state(state)
 
     def _tray_title(self, text: str) -> None:
         if self._hidden and self.tray and time.time() - self._last_tray_title > 1.0:
@@ -1130,6 +1276,7 @@ class App:
         para nunca deixar o programa sem janela e sem ícone."""
         if self.tray is None:
             self.tray = Tray("Unfrag Dark", resource_path("icon.png"), self._post_tray, self._is_busy)
+        self.tray.state = self._tray_state_cur
         if not self.tray.start():
             return False
         self._persist()
@@ -1145,7 +1292,10 @@ class App:
         if self.tray:
             self.tray.stop()
         self._hidden = False
+        if self._tray_state_cur in ("done", "error"):
+            self._tray_state_cur = "idle"  # o usuário já viu o resultado
         self.root.deiconify()
+        self.root.after(60, self._set_sash)
         try:
             self.root.state("normal")
         except tk.TclError:
@@ -1169,15 +1319,19 @@ class App:
             pass
 
 
-def run_gui(demo: bool = False) -> int:
+def run_gui(demo: bool = False, start_hidden: bool = False) -> int:
     inst = SingleInstance("demo" if demo else "main")
     if not inst.acquire():
         inst.signal_existing()  # a janela que já existe aparece (mesmo se estiver na bandeja)
         show_already_running()
         return 0
     root = tk.Tk()
+    if start_hidden:
+        root.withdraw()  # sem piscar a janela no logon
     app = App(root, demo=demo)
     inst.listen(lambda: app.q.put(("tray", "show")))
+    if start_hidden:
+        root.after(300, app.start_hidden)
     try:
         root.mainloop()
     finally:

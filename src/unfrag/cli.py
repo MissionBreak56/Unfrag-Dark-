@@ -3,6 +3,7 @@ de desfragmentadores clássicos: listar, analisar, desfragmentar, agendar)."""
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import List, Optional
@@ -82,14 +83,27 @@ def _open(args):
     letter = args.drive
     vol = open_volume(letter, demo=args.demo, delay=0.0)
     vol.threads = getattr(args, "threads", 0) or 0
+    vol.use_mft = _use_mft(args)
     return vol
+
+
+def _scan_method(vol) -> str:
+    if getattr(vol, "mft_used", False):
+        return "Método de análise: leitura direta da MFT"
+    err = getattr(vol, "mft_error", None)
+    if getattr(vol, "use_mft", False) and err:
+        return "Leitura da MFT indisponível (%s); usado o método clássico." % err
+    return ""
 
 
 def cmd_analyze(args) -> int:
     with _open(args) as vol:
         eng = Engine(vol, progress=_progress)
         r = eng.analyze(args.path, not args.no_recurse)
+        method = _scan_method(vol)
     print_analysis(r)
+    if method:
+        print(method)
     return 0
 
 
@@ -97,6 +111,7 @@ def cmd_defrag(args) -> int:
     reason = guard_reason(args.skip_battery, args.exclude or [])
     if reason:
         print("Não executado: %s." % reason)
+        _finish_run(args, args.drive, None, "Execução agendada de %s não realizada: %s." % (args.drive.upper().rstrip(":") + ":", reason), False)
         return 3
     if IS_WINDOWS and not args.demo:
         from .backends.windows import is_admin
@@ -113,6 +128,7 @@ def cmd_defrag(args) -> int:
             rep = eng.defragment(opts)
         except SsdSkipped as exc:
             print("\n%s." % exc)
+            _finish_run(args, args.drive, None, "%s." % exc, False)
             return 4
         except KeyboardInterrupt:
             eng.cancel.set()
@@ -120,9 +136,46 @@ def cmd_defrag(args) -> int:
             return 130
     print()
     print_report(rep)
+    _finish_run(args, args.drive, rep, _report_message(args.drive, rep), not rep.failed and not rep.cancelled)
     if args.shutdown and not rep.cancelled:
         shutdown_soon(60)
     return 1 if rep.failed else 0
+
+
+def cmd_startup(args) -> int:
+    from . import startup
+    if args.action == "status":
+        print("ligado" if startup.is_enabled() else "desligado")
+        return 0
+    err = startup.enable() if args.action == "enable" else startup.disable()
+    if err:
+        print("Erro: %s" % err)
+        return 1
+    print("Início com o Windows %s." % ("ligado" if args.action == "enable" else "desligado"))
+    return 0
+
+
+def _finish_run(args, drive: str, rep: Optional[Report], message: str, ok: bool) -> None:
+    """Guarda o resumo da execução e, se pedido (--notify, usado pelas tarefas agendadas), avisa no Windows."""
+    from .system import save_last_run
+    save_last_run({"when": time.strftime("%Y-%m-%d %H:%M:%S"), "drive": drive.upper().rstrip(":") + ":",
+                   "mode": getattr(args, "mode", ""), "ok": ok, "message": message,
+                   "scheduled": bool(getattr(args, "notify", False))})
+    if getattr(args, "notify", False):
+        from .notify import toast
+        toast(message, "Unfrag Dark" + ("" if ok else " - atenção"))
+
+
+def _report_message(drive: str, rep: Report) -> str:
+    d = drive.upper().rstrip(":") + ":"
+    if rep.cancelled:
+        return "Desfragmentação de %s cancelada." % d
+    b = "%.1f%%" % rep.before.fragmentation_percent if rep.before else "?"
+    a = "%.1f%%" % rep.after.fragmentation_percent if rep.after else "?"
+    msg = "%s fragmentação %s → %s (%d arquivos desfragmentados em %.0f s)" % (d, b, a, rep.defragmented, rep.seconds)
+    if rep.failed:
+        msg += "; %d falhas" % len(rep.failed)
+    return msg
 
 
 def cmd_schedule(args) -> int:
@@ -146,7 +199,24 @@ def cmd_schedule(args) -> int:
 
 def cmd_gui(args) -> int:
     from .gui import run_gui
-    return run_gui(demo=args.demo)
+    return run_gui(demo=args.demo, start_hidden=getattr(args, "tray", False))
+
+
+def _use_mft(args) -> bool:
+    """--mft liga, --no-mft desliga; sem nenhum dos dois vale a configuração salva (ou UNFRAG_MFT=1)."""
+    if getattr(args, "mft", None) is not None:
+        return bool(args.mft)
+    if os.environ.get("UNFRAG_MFT") in ("0", "1"):
+        return os.environ["UNFRAG_MFT"] == "1"
+    from .system import load_settings
+    return bool(load_settings().get("use_mft", False))
+
+
+def _mft_arg(parser: argparse.ArgumentParser) -> None:
+    g = parser.add_mutually_exclusive_group()
+    g.add_argument("--mft", dest="mft", action="store_true", default=None,
+                   help="lê a MFT do NTFS para analisar bem mais rápido (volume inteiro; volta ao método clássico se falhar)")
+    g.add_argument("--no-mft", dest="mft", action="store_false", help="não usa a leitura da MFT")
 
 
 def _threads_arg(parser: argparse.ArgumentParser) -> None:
@@ -161,7 +231,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--demo", action="store_true", help="usa volumes simulados (não toca em discos reais)")
     sub = p.add_subparsers(dest="cmd")
 
-    sub.add_parser("gui", help="abre a interface gráfica").set_defaults(fn=cmd_gui)
+    g = sub.add_parser("gui", help="abre a interface gráfica")
+    g.add_argument("--tray", action="store_true", help="inicia escondido na bandeja do sistema")
+    g.set_defaults(fn=cmd_gui)
+    st = sub.add_parser("startup", help="liga/desliga o início com o Windows (minimizado na bandeja)")
+    st.add_argument("action", choices=["enable", "disable", "status"])
+    st.set_defaults(fn=cmd_startup)
     sub.add_parser("list", help="lista as unidades").set_defaults(fn=cmd_list)
 
     a = sub.add_parser("analyze", help="analisa a fragmentação (não altera nada)")
@@ -169,6 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--path", help="analisa só uma pasta ou arquivo")
     a.add_argument("--no-recurse", action="store_true")
     _threads_arg(a)
+    _mft_arg(a)
     a.set_defaults(fn=cmd_analyze)
 
     d = sub.add_parser("defrag", help="desfragmenta")
@@ -190,6 +266,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--full-rescan", action="store_true",
                    help="ao final, reanalisa o volume inteiro (padrão: relê só os arquivos movidos)")
     _threads_arg(d)
+    _mft_arg(d)
+    d.add_argument("--notify", action="store_true", help="mostra um aviso do Windows ao terminar (usado pelas tarefas agendadas)")
     d.set_defaults(fn=cmd_defrag)
 
     s = sub.add_parser("schedule", help="cria/remove tarefa agendada (Windows)")

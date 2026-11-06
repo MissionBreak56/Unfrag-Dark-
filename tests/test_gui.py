@@ -12,7 +12,8 @@ from unfrag import gui  # noqa: E402
 
 class FakeTray:
     def __init__(self, ok=True):
-        self.ok, self.started, self.stopped, self.notes, self.titles = ok, 0, 0, [], []
+        self.ok, self.started, self.stopped, self.notes, self.titles, self.states = ok, 0, 0, [], [], []
+        self.state = "idle"
 
     def start(self):
         self.started += 1
@@ -26,6 +27,9 @@ class FakeTray:
 
     def set_title(self, t):
         self.titles.append(t)
+
+    def set_state(self, st):
+        self.states.append(st)
 
 
 @pytest.fixture
@@ -237,3 +241,114 @@ def test_default_window_fits_small_screen(app):
     sw, sh = app.root.winfo_screenwidth(), app.root.winfo_screenheight()
     w, h, _x, _y = app._geom
     assert w <= sw - 40 and h <= sh - 90
+
+
+# --- bandeja com estados, atualização, MFT e início escondido ----------------------------------
+
+def test_tray_state_follows_operation(app):
+    app.tray = FakeTray()
+    app.start("analyze")
+    assert app.tray.states and app.tray.states[0] == "busy"
+    assert pump(app, lambda: not app._is_busy() and app._tray_state_cur != "busy")
+    assert app.tray.states[-1] == "done"
+    app.on_close()  # esconde: o ícone nasce já com o estado atual
+    assert app.tray.state == "done"
+    app._tray_action("show")
+    assert app._tray_state_cur == "idle"  # viu o resultado
+
+
+def test_tray_state_error_and_cancel(app, monkeypatch):
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda *a, **k: None)  # um diálogo modal travaria o teste
+    app.tray = FakeTray()
+    app._handle(("error", "falhou"))
+    app._handle(("done",))
+    assert app.tray.states[-1] == "error"
+    app._handle(("info", "Operação cancelada."))
+    app._handle(("done",))
+    assert app.tray.states[-1] == "idle"
+
+
+def test_error_while_hidden_notifies_instead_of_dialog(app, monkeypatch):
+    shown = []
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda *a, **k: shown.append(a))
+    app.tray = FakeTray()
+    app.on_close()
+    app._handle(("error", "Erro: algo"))
+    assert not shown and app.tray.notes and "algo" in app.tray.notes[-1]
+
+
+def test_update_banner_ignore_and_rebuild(app):
+    app._on_update_result(("newer", "v9.9.9", "https://x/y"), False)
+    assert app._update == ("v9.9.9", "https://x/y") and app.update_bar.winfo_exists()
+    app._set_base(dict(app.base, accent="#ff8800"))
+    for _ in range(20):
+        app.root.update()
+    assert app.update_bar.winfo_exists()  # sobrevive à troca de cores
+    app._ignore_update("v9.9.9")
+    assert app._update is None and app.settings["ignored_version"] == "v9.9.9"
+    app._on_update_result(("newer", "v9.9.9", "https://x/y"), False)  # versão ignorada não reaparece sozinha
+    assert app._update is None
+    app._on_update_result(("newer", "v9.9.9", "https://x/y"), True)   # mas "Verificar agora" mostra
+    assert app._update is not None
+    from unfrag import palette
+    palette.apply_palette(gui.C, palette.DEFAULT_BASE)
+
+
+def test_update_messages(app):
+    app._on_update_result(("current", "v0.1.7", None), True)
+    assert "mais recente" in app.v_update_msg.get()
+    app._on_update_result(("error", None, None), True)
+    assert "Não foi possível" in app.v_update_msg.get()
+    app._on_update_result(("error", None, None), False)  # verificação automática falha em silêncio
+    assert app.v_update_msg.get().startswith("Não foi possível")  # mensagem anterior intacta, sem diálogo
+
+
+def test_mft_option_persists_and_reaches_backend(tmp_path, monkeypatch):
+    a = _new_app(tmp_path, monkeypatch)
+    try:
+        assert a.v_mft.get() is False
+        a.v_mft.set(True)
+        seen = {}
+        orig = gui.open_volume
+
+        def spy(*args, **kw):
+            v = orig(*args, **kw)
+            seen["vol"] = v
+            return v
+        monkeypatch.setattr(gui, "open_volume", spy)
+        a.start("analyze")
+        assert pump(a, lambda: bool(a.v_last.get()))
+        assert seen["vol"].use_mft is True
+        a.quit_app()
+        b = _new_app(tmp_path, monkeypatch)
+        try:
+            assert b.v_mft.get() is True
+        finally:
+            b.quit_app()
+    finally:
+        pass
+
+
+def test_start_hidden_goes_to_tray_or_shows_window(app):
+    app.tray = FakeTray()
+    app.start_hidden()
+    assert app._hidden and app.root.state() == "withdrawn" and app._tray_hint_shown
+    app._tray_action("show")
+    app.tray = FakeTray(ok=False)
+    app.root.withdraw()
+    app.start_hidden()  # sem bandeja: não pode ficar invisível
+    assert not app._hidden and app.root.state() == "normal"
+
+
+def test_last_scheduled_run_is_logged(tmp_path, monkeypatch):
+    import json
+    d = tmp_path / "unfrag-dark"
+    d.mkdir()
+    (d / "last-run.json").write_text(json.dumps({"scheduled": True, "when": "2026-11-06 03:00:00",
+                                                 "message": "C: fragmentação 5.0% → 0.1%"}), encoding="utf-8")
+    a = _new_app(tmp_path, monkeypatch)
+    try:
+        pump(a, lambda: "Última execução agendada" in a.log.get("1.0", "end"), timeout=3)
+        assert "C: fragmentação 5.0% → 0.1%" in a.log.get("1.0", "end")
+    finally:
+        a.quit_app()

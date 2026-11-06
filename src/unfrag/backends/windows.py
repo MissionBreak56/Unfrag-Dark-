@@ -21,6 +21,7 @@ if sys.platform != "win32":  # pragma: no cover
     raise ImportError("backend Windows só funciona no Windows")
 
 from ..model import DriveInfo, Extent, FileInfo
+from .. import mft
 from ..ntfs import parse_retrieval
 from ..scan import parallel_scan
 from ..system import resolve_threads
@@ -37,6 +38,7 @@ INVALID_HANDLE = ctypes.c_void_p(-1).value
 
 FSCTL_GET_VOLUME_BITMAP = 0x0009006F
 FSCTL_GET_RETRIEVAL_POINTERS = 0x00090073
+FSCTL_GET_NTFS_VOLUME_DATA = 0x00090064
 FSCTL_MOVE_FILE = 0x00090074
 IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400
 
@@ -57,6 +59,10 @@ k32.DeviceIoControl.argtypes = [wt.HANDLE, wt.DWORD, wt.LPVOID, wt.DWORD, wt.LPV
                                 ctypes.POINTER(wt.DWORD), wt.LPVOID]
 k32.DeviceIoControl.restype = wt.BOOL
 k32.CloseHandle.argtypes = [wt.HANDLE]
+k32.SetFilePointerEx.argtypes = [wt.HANDLE, ctypes.c_int64, ctypes.c_void_p, wt.DWORD]
+k32.SetFilePointerEx.restype = wt.BOOL
+k32.ReadFile.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD, ctypes.c_void_p, ctypes.c_void_p]
+k32.ReadFile.restype = wt.BOOL
 k32.GetDiskFreeSpaceW.argtypes = [wt.LPCWSTR] + [ctypes.POINTER(wt.DWORD)] * 4
 k32.GetDiskFreeSpaceExW.argtypes = [wt.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64),
                                     ctypes.POINTER(ctypes.c_uint64)]
@@ -172,7 +178,28 @@ class _ThreadCtx:
         self.ret_ref = ctypes.byref(self.ret)
 
 
+def skip_reason(name_lower: str, attrs: int) -> Optional[str]:
+    if name_lower in SYSTEM_NAMES:
+        return "arquivo de sistema"
+    if attrs & ATTR_REPARSE:
+        return "ponto de reanálise"
+    if attrs & ATTR_ENCRYPTED:
+        return "criptografado (EFS)"
+    if attrs & ATTR_SPARSE:
+        return "arquivo esparso"
+    if attrs & ATTR_COMPRESSED:
+        return "compactado pelo NTFS"
+    if attrs & ATTR_OFFLINE:
+        return "offline"
+    return None
+
+
 class WindowsVolume(VolumeBackend):
+    use_mft = False          # lê a MFT em vez de abrir arquivo por arquivo (só para o volume inteiro)
+    progress = None          # callable(feitos, total) usado durante a leitura da MFT
+    mft_used = False         # a última análise usou a MFT?
+    mft_error: Optional[str] = None  # por que a MFT não foi usada (e o método clássico entrou)
+
     def __init__(self, letter: str):
         self.letter = letter.rstrip(":\\/").upper()
         root = "%s:\\" % self.letter
@@ -280,20 +307,7 @@ class WindowsVolume(VolumeBackend):
             k32.CloseHandle(h)
 
     def _scan(self, path: str, size: int, attrs: int) -> Optional[FileInfo]:
-        name = os.path.basename(path).lower()
-        skip = None
-        if name in SYSTEM_NAMES:
-            skip = "arquivo de sistema"
-        elif attrs & ATTR_REPARSE:
-            skip = "ponto de reanálise"
-        elif attrs & ATTR_ENCRYPTED:
-            skip = "criptografado (EFS)"
-        elif attrs & ATTR_SPARSE:
-            skip = "arquivo esparso"
-        elif attrs & ATTR_COMPRESSED:
-            skip = "compactado pelo NTFS"
-        elif attrs & ATTR_OFFLINE:
-            skip = "offline"
+        skip = skip_reason(os.path.basename(path).lower(), attrs)
         try:
             h = _open(_long(path), FILE_READ_ATTRIBUTES)
         except OSError as exc:
@@ -340,6 +354,8 @@ class WindowsVolume(VolumeBackend):
     def iter_files(self, root: Optional[str], recurse: bool) -> Iterator[FileInfo]:
         self.trivial_files = 0
         self.trivial_bytes = 0
+        self.mft_used = False
+        self.mft_error = None
         root = root or ("%s:\\" % self.letter)
         if os.path.isfile(root):
             st = os.stat(root)
@@ -347,8 +363,78 @@ class WindowsVolume(VolumeBackend):
             if info:
                 yield info
             return
+        whole_volume = recurse and os.path.normpath(root).rstrip("\\").upper() == "%s:" % self.letter
+        if self.use_mft and whole_volume:
+            try:
+                entries = self._mft_entries()
+            except (mft.Unsupported, OSError, ValueError, struct.error, MemoryError) as exc:
+                self.mft_error = "%s: %s" % (type(exc).__name__, exc)
+                entries = None
+            if entries is not None:
+                self.mft_used = True
+                yield from self._from_mft(entries)
+                return
         workers = resolve_threads(self.threads)
         yield from parallel_scan(self._walk(root, recurse), lambda t: self._scan(*t), workers=workers)
+
+    # --- MFT -----------------------------------------------------------------
+    def _read_volume(self, offset: int, n: int) -> bytes:
+        """Lê `n` bytes do volume bruto (deslocamento e tamanho múltiplos do setor)."""
+        if not k32.SetFilePointerEx(self._vol, offset, None, 0):
+            raise _winerr("SetFilePointerEx falhou")
+        buf = getattr(self._tls, "rawbuf", None)
+        if buf is None or len(buf) < n:
+            buf = self._tls.rawbuf = ctypes.create_string_buffer(max(n, 4 << 20))
+        got = wt.DWORD(0)
+        if not k32.ReadFile(self._vol, buf, n, ctypes.byref(got), None):
+            raise _winerr("ReadFile no volume falhou (deslocamento %d)" % offset)
+        return ctypes.string_at(ctypes.addressof(buf), got.value)
+
+    def _ntfs_volume_data(self) -> dict:
+        buf = ctypes.create_string_buffer(128)
+        ret = wt.DWORD(0)
+        if not k32.DeviceIoControl(self._vol, FSCTL_GET_NTFS_VOLUME_DATA, None, 0, buf, 128,
+                                   ctypes.byref(ret), None):
+            raise _winerr("FSCTL_GET_NTFS_VOLUME_DATA falhou (o volume não é NTFS?)")
+        bps, bpc, bpr, _cpr = struct.unpack_from("<IIII", buf, 40)
+        valid, start_lcn = struct.unpack_from("<qq", buf, 56)
+        return dict(bytes_per_sector=bps, bytes_per_cluster=bpc, bytes_per_record=bpr,
+                    mft_valid_length=valid, mft_start_lcn=start_lcn)
+
+    def _mft_entries(self) -> list:
+        """Lê a MFT inteira do volume e devolve [(caminho, tamanho, atributos, extents|None)]."""
+        vd = self._ntfs_volume_data()
+        cs, rec_size = vd["bytes_per_cluster"], vd["bytes_per_record"]
+        if cs <= 0 or rec_size < 512 or rec_size % 512 or vd["mft_start_lcn"] <= 0:
+            raise mft.Unsupported("dados do volume NTFS inesperados")
+        rec0 = bytearray(self._read_volume(vd["mft_start_lcn"] * cs, rec_size))
+        runs, size = mft.mft_runs_from_record0(rec0)
+        total = min(size, vd["mft_valid_length"] or size) // rec_size
+        scanner = mft.MftScanner("%s:\\" % self.letter, cs)
+        report = self.progress
+        for idx, rec in mft.iter_mft_records(self._read_volume, runs, cs, rec_size, total,
+                                             progress=(lambda d, t: report(d, t)) if report else None):
+            scanner.feed(idx, rec)
+        return list(scanner.results())
+
+    def _from_mft(self, entries: list) -> Iterator[FileInfo]:
+        cs = self.cluster_size
+        skip_attrs = ATTR_REPARSE | ATTR_SPARSE | ATTR_COMPRESSED | ATTR_ENCRYPTED | ATTR_OFFLINE
+        fallback = []
+        for path, size, attrs, extents in entries:
+            if size == 0:
+                continue
+            name = path.rsplit("\\", 1)[-1].lower()
+            if size <= cs and not attrs & skip_attrs and name not in SYSTEM_NAMES:
+                self.trivial_files += 1
+                self.trivial_bytes += size
+                continue
+            if extents is None:  # a MFT não deu certeza: pergunta ao Windows, como no método clássico
+                fallback.append((path, size, attrs))
+                continue
+            yield FileInfo(path, size, extents, skip_reason(name, attrs))
+        if fallback:
+            yield from parallel_scan(iter(fallback), lambda t: self._scan(*t), workers=resolve_threads(self.threads))
 
     # --- mover -------------------------------------------------------------
     def move_clusters(self, path: str, vcn: int, lcn: int, count: int) -> None:

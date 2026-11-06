@@ -22,7 +22,7 @@ def _app_command() -> str:
 def build_create_args(letter: str, mode: str, frequency: str, time_hhmm: str,
                       extra: str = "") -> List[str]:
     sc = FREQUENCIES.get(frequency, frequency).upper()
-    cmd = "%s defrag %s: --mode %s --skip-battery %s" % (_app_command(), letter.upper().rstrip(":"), mode, extra)
+    cmd = "%s defrag %s: --mode %s --skip-battery --notify %s" % (_app_command(), letter.upper().rstrip(":"), mode, extra)
     return ["schtasks", "/Create", "/F", "/TN", task_name(letter, frequency), "/SC", sc,
             "/ST", time_hhmm, "/RL", "HIGHEST", "/TR", cmd.strip()]
 

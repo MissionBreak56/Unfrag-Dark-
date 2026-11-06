@@ -117,6 +117,11 @@ class Engine:
         self.free = FreeMap.from_bitmap(bitmap, self.backend.total_clusters)
         n = 0
         files = self.files
+        if hasattr(self.backend, "progress"):  # leitura da MFT: mostra andamento e permite cancelar
+            def mft_progress(done: int, total: int) -> None:
+                self._check_cancel()
+                self._emit("scan", done, total, "lendo a MFT")
+            self.backend.progress = mft_progress
         with gc_paused():
             for f in self.backend.iter_files(root, recurse):
                 sig = _signature(f)

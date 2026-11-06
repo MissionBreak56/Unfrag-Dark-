@@ -1,0 +1,22 @@
+name: validar-no-windows
+
+# Roda o programa de verdade num Windows com NTFS (como administrador): compara a leitura da MFT com o
+# método clássico, desfragmenta uma pasta de teste e confere o conteúdo. Não bloqueia o release.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["src/**", "tools/**", ".github/workflows/validate.yml"]
+
+jobs:
+  validar:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip && python -m pip install .
+      - name: Validar no Windows real
+        run: python tools/validate_windows.py

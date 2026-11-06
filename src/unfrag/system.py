@@ -89,3 +89,26 @@ def fmt_bytes(n: float) -> str:
             return ("%d %s" % (n, unit)) if unit == "B" else ("%.1f %s" % (n, unit))
         n /= 1024
     return "%.1f TB" % n
+
+
+def last_run_path() -> str:
+    return os.path.join(os.path.dirname(settings_path()), "last-run.json")
+
+
+def save_last_run(info: dict) -> None:
+    """Resumo da última execução (a interface mostra, inclusive as feitas por tarefa agendada)."""
+    try:
+        os.makedirs(os.path.dirname(last_run_path()), exist_ok=True)
+        with open(last_run_path(), "w", encoding="utf-8") as fh:
+            json.dump(info, fh, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def load_last_run() -> dict:
+    try:
+        with open(last_run_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
