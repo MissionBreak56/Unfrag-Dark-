@@ -189,6 +189,10 @@ class TabView(tk.Frame):
         self.body = self.card.inner
         self.body.columnconfigure(0, weight=1)
         self.body.rowconfigure(0, weight=1)
+        # tamanho fixo: o corpo NÃO acompanha o conteúdo da aba selecionada (senão a janela "pula" de
+        # altura ao trocar de aba); ele só ocupa o espaço que o layout der, e o conteúdo rola dentro dele
+        self.body.grid_propagate(False)
+        self.body.configure(width=200, height=170)
         self._tabs: List[tuple] = []
         self.current: Optional[int] = None
 
