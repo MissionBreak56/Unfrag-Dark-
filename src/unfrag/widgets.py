@@ -173,6 +173,8 @@ class PillButton(tk.Canvas):
 class TabView(tk.Frame):
     """Barra de abas (ícone + texto) e um cartão que mostra a página selecionada."""
 
+    FIXED_HEIGHT = 270
+
     def __init__(self, parent, colors: Dict[str, str]):
         super().__init__(parent, bg=colors["bg"])
         self.c = colors
@@ -180,6 +182,10 @@ class TabView(tk.Frame):
         self.bar.pack(fill="x")
         self.card = Card(self, colors["panel"], colors["glow"], colors["edge"], colors["bg"], pad=(6, 6))
         self.card.pack(fill="both", expand=True, pady=(0, 0))
+        # tamanho fixo: a altura pedida não depende da página aberta, então trocar de aba
+        # não muda a escala do resto da janela (a página rola ou se ajusta dentro do cartão)
+        self.card.configure(height=self.FIXED_HEIGHT, width=10)
+        self.card.pack_propagate(False)
         self.body = self.card.inner
         self.body.columnconfigure(0, weight=1)
         self.body.rowconfigure(0, weight=1)
