@@ -2,56 +2,34 @@
 
 <img src="docs/icon.png" width="96" align="right" alt="Ícone do Unfrag Dark">
 
-Desfragmentador de disco **NTFS** para Windows, de código aberto, com **tema escuro**.
-Projeto independente, escrito do zero em Python (sem código, nome, ícones ou textos de terceiros).
-Foi inspirado, em termos de *funcionalidades*, em desfragmentadores clássicos para PC.
+[![build](https://github.com/MissionBreak56/Unfrag-Dark-/actions/workflows/build.yml/badge.svg)](https://github.com/MissionBreak56/Unfrag-Dark-/actions/workflows/build.yml)
+[![validar no Windows](https://github.com/MissionBreak56/Unfrag-Dark-/actions/workflows/validate.yml/badge.svg)](https://github.com/MissionBreak56/Unfrag-Dark-/actions/workflows/validate.yml)
+![licença](https://img.shields.io/badge/licen%C3%A7a-MIT-blue)
 
-![Análise](docs/screenshot-analyze.png)
-![Depois de desfragmentar](docs/screenshot-defrag.png)
-![Opções com explicações](docs/screenshot-options.png)
+Desfragmentador de disco **NTFS** para Windows 10/11, de código aberto, com **tema escuro** e mapa de disco
+interativo. Projeto independente, escrito do zero em Python: não usa código, nome, ícones nem textos de
+terceiros (veja [`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md)). Foi inspirado, em termos de *funcionalidades*,
+em desfragmentadores clássicos para PC.
 
-> As capturas usam o **modo demo** (volumes simulados), por isso funcionam em qualquer sistema.
+![Análise de uma unidade: fragmentação, mapa de blocos e lista de arquivos fragmentados](docs/screenshot-analyze.png)
 
-## Funções
+| Detalhe de um bloco do mapa | Depois de desfragmentar |
+|---|---|
+| ![Clicar em um quadrado mostra o bloco e os arquivos fragmentados que têm dados nele](docs/screenshot-block.png) | ![Fragmentação em 0,0% e espaço livre agrupado](docs/screenshot-defrag.png) |
 
-| Função | GUI | CLI |
+| Opções | Cores do app | Agendamento |
 |---|---|---|
-| Listar unidades (tipo HDD/SSD, sistema de arquivos, espaço livre) | ✔ | `unfrag list` |
-| Analisar fragmentação sem alterar nada | Analisar | `unfrag analyze C:` |
-| Desfragmentar (completo) | Desfragmentar | `unfrag defrag C:` |
-| Desfragmentação rápida (arquivos até 256 MiB) | Rápida | `--mode quick` |
-| Consolidar espaço livre | Espaço livre | `--mode freespace` |
-| Desfragmentar uma pasta ou um arquivo | Opções / botão direito na lista | `--path "C:\Pasta"` |
-| Mover arquivos grandes / por extensão para o fim do disco | Opções | `--move-large 500` / `--move-ext .iso,.vhdx` |
-| Mapa de disco colorido (livre / em uso / fragmentado / não movível) | ✔ | — |
-| Lista de arquivos fragmentados (ordenável) | ✔ | — |
-| Proteção para SSD (ignora, a menos que forçado) | ✔ | `--force-ssd` |
-| Threads de leitura da análise (1–64, 0 = automático) | Opções | `--threads N` |
-| Só executar se a fragmentação for ≥ X% | ✔ | `--min-frag 10` |
-| Não executar na bateria / se certos processos estiverem rodando | ✔ | `--skip-battery` / `--exclude app.exe` |
-| Desligar o PC ao terminar | ✔ | `--shutdown` |
-| Agendamento (diário/semanal/mensal) via Agendador de Tarefas | Agendamento | `unfrag schedule create C:` |
-| Parar a qualquer momento (cancelamento seguro) | Parar | Ctrl+C |
+| ![Aba Opções](docs/screenshot-options.png) | ![Temas e cores personalizáveis](docs/screenshot-colors.png) | ![Aba Agendamento](docs/screenshot-schedule.png) |
 
-## Como funciona
+> As capturas usam o **modo demo** (volumes simulados), então nenhum disco real foi tocado. Para refazê-las:
+> `tools/make_screenshots.py`.
 
-Usa as IOCTLs documentadas do Windows para desfragmentação online, as mesmas que a Microsoft
-descreve na documentação de *Defragmenting Files*:
+## Baixar e usar
 
-* `FSCTL_GET_VOLUME_BITMAP` – mapa de clusters livres/ocupados;
-* `FSCTL_GET_RETRIEVAL_POINTERS` – extents de cada arquivo;
-* `FSCTL_MOVE_FILE` – o próprio NTFS move os clusters, mantendo a integridade dos dados;
-* `IOCTL_STORAGE_QUERY_PROPERTY` – detecta SSD (sem penalidade de seek).
-
-O algoritmo (em `src/unfrag/engine.py`) é próprio: arquivos fragmentados são regravados em uma única
-corrida livre (first-fit, menores primeiro); o modo *espaço livre* ainda puxa arquivos do fim do volume
-para os primeiros buracos, em até 4 passadas; arquivos grandes podem ser empurrados para o fim.
-Arquivos de sistema, esparsos, criptografados (EFS), compactados pelo NTFS e pontos de reanálise
-nunca são tocados.
-
-## Instalação e uso
-
-Requer Windows 10/11 e Python 3.10+ (ou use o `.exe` gerado pelo CI em *Actions → build → Artifacts*).
+* **Executáveis:** em [Releases](https://github.com/MissionBreak56/Unfrag-Dark-/releases) ou em
+  *Actions → build → Artifacts* (`UnfragDark.exe` = interface gráfica, `unfrag.exe` = linha de comando).
+  Os dois pedem permissão de administrador (UAC), que a API de desfragmentação exige.
+* **Pelo Python** (3.10+):
 
 ```bat
 pip install .
@@ -59,11 +37,9 @@ unfrag gui                 :: interface gráfica (execute como Administrador)
 unfrag list
 unfrag analyze C:
 unfrag defrag C: --mode quick
-unfrag defrag D: --mode freespace --move-large 1000 --skip-battery
-unfrag schedule create C: --frequency semanal --time 03:00 --mode quick
 ```
 
-Teste sem risco em qualquer sistema (inclusive Linux/macOS):
+**Teste sem risco, em qualquer sistema** (Windows, Linux ou macOS), com volumes simulados:
 
 ```bash
 pip install .
@@ -71,79 +47,159 @@ unfrag --demo gui
 unfrag --demo defrag C: --mode freespace
 ```
 
-## Velocidade da análise
+## Funções
 
-* Os arquivos são lidos em **várias threads** (escolha em *Opções → Threads de leitura*, `--threads N` na CLI ou `UNFRAG_THREADS=N`; padrão automático: 2 por núcleo, até 16) —
-  a espera pelo disco libera o GIL, então a leitura de extents é paralela.
-* Arquivos que cabem em **1 cluster não podem fragmentar** e são apenas contados, sem abrir o arquivo.
+| Função | Interface | Linha de comando |
+|---|---|---|
+| Listar unidades (tipo HDD/SSD, sistema de arquivos, espaço livre) | ✔ | `unfrag list` |
+| Analisar a fragmentação sem alterar nada | **Analisar** | `unfrag analyze C:` |
+| Desfragmentação completa | **Desfragmentar** | `unfrag defrag C:` |
+| Desfragmentação rápida (arquivos até 256 MiB) | **Rápida** | `--mode quick` |
+| Consolidar o espaço livre | **Espaço livre** | `--mode freespace` |
+| Desfragmentar só uma pasta ou um arquivo | Opções / botão direito na lista | `--path "C:\Pasta"` |
+| Mover arquivos grandes ou por extensão para o fim do disco | Opções | `--move-large 500` / `--move-ext .iso,.vhdx` |
+| Mapa de disco (livre / em uso / fragmentado / não movível) | ✔ | — |
+| **Clicar em um bloco do mapa:** detalhes do bloco e filtro da lista pelos arquivos que têm dados nele | ✔ | — |
+| Lista de arquivos fragmentados, ordenável | ✔ | — |
+| Proteção para SSD (ignorado, a menos que forçado) | ✔ | `--force-ssd` |
+| Leitura direta da MFT para analisar mais rápido | Opções | `--mft` / `--no-mft` |
+| Threads de leitura da análise (1–64; 0 = automático) | Opções | `--threads N` |
+| Só executar se a fragmentação for ≥ X% | ✔ | `--min-frag 10` |
+| Não executar na bateria / se certos programas estiverem abertos | ✔ | `--skip-battery` / `--exclude app.exe` |
+| Desligar o PC ao terminar | ✔ | `--shutdown` |
+| Agendamento diário/semanal/mensal (Agendador de Tarefas do Windows) | **Agendamento** | `unfrag schedule create C:` |
+| Parar a qualquer momento, com cancelamento seguro | **Parar** | `Ctrl+C` |
+| Bandeja do sistema: fechar a janela mantém o trabalho rodando; o ícone muda de cor (laranja = trabalhando, verde = concluído, vermelho = erro) | Opções | — |
+| Iniciar com o Windows, minimizado na bandeja | Opções | — |
+| Aviso do Windows ao terminar tarefas agendadas | automático | `--notify` |
+| Temas prontos (Azul, Grafite, Esmeralda, Violeta) e cores individuais | Opções → Cores | — |
+| Janela lembra tamanho, posição e se estava maximizada; instância única | automático | — |
+| Resumo da última execução, inclusive as feitas por tarefa agendada | ✔ | — |
+| Aviso de versão nova no GitHub (pode ser desligado) | Opções | — |
+
+Cada botão tem uma explicação (passe o mouse sobre ele) e cada opção tem um texto explicativo na aba Opções.
+
+## Como funciona
+
+Usa as IOCTLs documentadas do Windows para desfragmentação online, as mesmas descritas pela Microsoft na
+documentação de *Defragmenting Files*:
+
+* `FSCTL_GET_VOLUME_BITMAP`: mapa de clusters livres e ocupados;
+* `FSCTL_GET_RETRIEVAL_POINTERS`: extents de cada arquivo;
+* `FSCTL_MOVE_FILE`: o próprio NTFS move os clusters e mantém a integridade dos dados;
+* `IOCTL_STORAGE_QUERY_PROPERTY`: detecta SSD (sem penalidade de seek).
+
+O algoritmo (`src/unfrag/engine.py`) é próprio:
+
+* **Desfragmentar:** cada arquivo fragmentado é regravado em uma única corrida de espaço livre (*first-fit*),
+  dos menores para os maiores.
+* **Rápida:** igual, só para arquivos de até 256 MiB e sem consolidar o espaço livre.
+* **Espaço livre:** a completa, e depois arquivos do fim do volume são puxados para os primeiros buracos que os
+  comportam (até 4 passadas), juntando o espaço livre em um bloco grande no final.
+* **Arquivos grandes ou por extensão** podem ser empurrados para o fim do disco.
+* Antes de mover cada arquivo o motor confere o estado real dele no volume. Se algo mudou, o arquivo é
+  ignorado; se o mapa local divergir do disco, o mapa é relido em vez de seguir com dados velhos.
+* Vários nomes do mesmo arquivo (*hard links*, comuns em `WinSxS`) são reconhecidos e contados uma vez.
+* Arquivos de sistema, esparsos, criptografados (EFS), compactados pelo NTFS, pontos de reanálise e arquivos
+  que não abrem nunca são movidos (aparecem como ignorados, não como falhas).
+
+## Velocidade
+
+**Análise**
+
+* **Leitura direta da MFT** (padrão; desligue em Opções ou com `--no-mft`): a análise do volume inteiro lê a
+  MFT do NTFS em sequência em vez de abrir cada arquivo. No Windows de teste do CI (1,18 milhão de arquivos)
+  levou 20 s contra 9 min 24 s do método clássico, com os mesmos extents. Se algo não puder ser lido com
+  segurança, aquele arquivo (ou o volume todo) volta ao método clássico e o motivo vai para o Registro.
+* O método clássico lê os arquivos em **várias threads** (Opções → *Threads de leitura*, `--threads N` ou
+  `UNFRAG_THREADS=N`; automático: 2 por núcleo, até 16).
+* Arquivos de até 1 cluster não podem fragmentar e só são contados, sem abrir.
 * O mapa de clusters livres é interpretado por blocos homogêneos (≈10× mais rápido que bit a bit).
-* Buffers reaproveitados por thread e caminhos longos sem `abspath` por arquivo.
-* O coletor de lixo do Python fica **pausado durante a varredura** (milhões de objetos pequenos sem
-  ciclos; o GC os reexaminava várias vezes) e o buffer de extents é decodificado de uma vez
-  (`ntfs.py`), sem copiar o buffer nem fazer um `struct` por extent. Em um benchmark sintético
-  (300 mil arquivos, só CPU em Python, sem E/S) a análise caiu de ~2,7 s para ~1,3 s.
-* Objetos ctypes (buffer, `c_int64`, `DWORD`, `byref`) são reaproveitados por thread.
+* O coletor de lixo do Python fica pausado durante a varredura e o buffer de extents é decodificado de uma
+  vez, sem um `struct` por extent; objetos ctypes são reaproveitados por thread. Em um benchmark sintético
+  (300 mil arquivos, só CPU) a análise caiu de ~2,7 s para ~1,3 s.
 * A janela e a CLI mostram o tempo da análise.
-* **Leitura direta da MFT** (padrão; `--no-mft` ou Opções desligam): a análise do volume inteiro lê a MFT do NTFS
-  em sequência em vez de abrir cada arquivo. No Windows de teste do CI (1,18 milhão de arquivos) levou 20 s contra
-  9 min 24 s do método clássico, com os mesmos extents. Se algo não puder ser lido com segurança, aquele arquivo (ou
-  o volume todo) volta ao método clássico.
-* **Iniciar com o Windows** (Opções): tarefa agendada de logon com privilégios altos, sem pedir confirmação a cada
-  login, abre minimizado na bandeja. O ícone da bandeja muda de cor (laranja = trabalhando, verde = concluído,
-  vermelho = erro) e as tarefas agendadas avisam ao terminar.
-* **Atualizações:** o programa verifica sozinho se há versão nova no GitHub e mostra um aviso com o botão Baixar.
-* **Cores personalizáveis** (Opções → Cores do app): temas prontos (Azul, Grafite, Esmeralda, Violeta) ou cada
-  cor individual (blocos livres/em uso/fragmentados/não movíveis, fundo, cartões, destaque e texto). Aplica na
-  hora e fica salvo. Os blocos livres são cinza por padrão.
-* **Posição da janela:** o programa lembra tamanho, posição e se estava maximizado (sempre dentro da tela), e a
-  janela inicial se ajusta a telas pequenas.
-* **Instância única:** abrir o programa de novo com ele já aberto (inclusive escondido na bandeja) mostra o
-  aviso "O Unfrag Dark já está aberto" e traz a janela existente para a frente.
-* **Detalhe do bloco:** clique em um quadrado do mapa para ver qual bloco é (número, clusters, posição no
-  disco, % livre) e quais arquivos fragmentados têm dados nele; a lista passa a mostrar só esses arquivos,
-  com quantos pedaços de cada um caem no bloco. Clique de novo no quadrado (ou em *Mostrar todos*) para voltar.
-* **Bandeja do sistema:** ao clicar no X a janela some e o programa continua em execução ao lado do relógio
-  (inclusive uma análise/desfragmentação em andamento). Clique no ícone para abrir; o menu do ícone tem
-  *Abrir*, *Parar operação* e *Sair*. Dá para desligar em Opções ("Fechar a janela minimiza para a bandeja").
 
-## Segurança — leia antes de usar em disco real
+**Modo Espaço livre**
 
-* **Faça backup.** O `FSCTL_MOVE_FILE` é a API oficial e segura do NTFS, mas qualquer ferramenta que
-  mexe no disco pode encontrar falhas de hardware ou de energia.
-* O motor (algoritmo, mapa livre, cancelamento, tratamento de falhas, invariantes de integridade) é
-  coberto por **testes automatizados com um volume simulado**. O **backend Windows** (`backends/windows.py`)
-  foi escrito seguindo a documentação, mas **ainda não foi validado em hardware real** pelo autor —
-  comece por `analyze`, depois por uma pasta de teste (`--path`) antes de rodar no disco todo.
-* Em SSD a desfragmentação é desnecessária e reduz a vida útil; o app ignora SSDs por padrão.
-* Requer execução como Administrador. Todo o acesso é local; o app não faz conexões de rede e não
-  coleta telemetria.
+* A busca de buracos usa dicas por classe de tamanho e pula direto para o primeiro trecho que comporta o
+  arquivo (teste sintético com 200 mil trechos livres: ~112 s → ~7 s para 60 mil buscas, resultados idênticos).
+* A compactação para quando não resta buraco antes dos arquivos que faltam.
+* A verificação final relê só o mapa de espaço livre e os arquivos movidos, em paralelo. *Reanálise completa
+  ao final* (Opções) ou `--full-rescan` (CLI) voltam ao comportamento de reanalisar o volume inteiro.
+* O tempo restante é dominado pela cópia real dos clusters pelo NTFS, que depende do disco.
+
+## Linha de comando
+
+```bat
+unfrag list
+unfrag analyze C: [--path PASTA] [--no-recurse] [--threads N] [--mft | --no-mft]
+unfrag defrag  C: [--mode defrag|quick|freespace] [--path PASTA] [--no-recurse]
+                  [--move-large MB] [--move-ext .iso,.vhdx] [--min-frag PCT]
+                  [--force-ssd] [--skip-battery] [--exclude APP.EXE] [--shutdown]
+                  [--full-rescan] [--threads N] [--mft | --no-mft] [--notify]
+unfrag schedule create|delete C: [--frequency diária|semanal|mensal] [--time 03:00]
+                  [--mode quick] [--move-large MB] [--dry-run]
+unfrag gui
+unfrag --demo ...          # volumes simulados, não toca em discos
+```
+
+Exemplos:
+
+```bat
+unfrag defrag D: --mode freespace --move-large 1000 --skip-battery
+unfrag schedule create C: --frequency semanal --time 03:00 --mode quick
+```
+
+## Segurança, validação e privacidade
+
+* **Faça backup.** O `FSCTL_MOVE_FILE` é a API oficial e segura do NTFS, mas qualquer ferramenta que mexe no
+  disco pode encontrar falhas de hardware ou de energia.
+* **Testes automatizados:** o motor (algoritmo, mapa livre, cancelamento, falhas, hard links, estado
+  desatualizado, invariantes de integridade) é testado com um volume simulado, e a interface tem testes de
+  fumaça (121 testes passam com interface gráfica; 87 sem ela).
+* **Validação no Windows:** o workflow [`validar-no-windows`](.github/workflows/validate.yml) roda o programa de
+  verdade em um Windows com NTFS, como administrador: compara a leitura da MFT com o método clássico, cria uma
+  pasta de teste com arquivos fragmentados de propósito, desfragmenta e confere o SHA-256 de cada arquivo antes
+  e depois, e testa a tarefa de início com o Windows. Isso roda em uma máquina virtual do GitHub, então **não
+  substitui** testes em discos e hardware variados: comece por `analyze` e por uma pasta de teste (`--path`)
+  antes de desfragmentar a unidade inteira.
+* **SSD:** a desfragmentação é desnecessária e reduz a vida útil; o app ignora SSDs por padrão.
+* **Privacidade:** tudo acontece localmente e não há telemetria. A única conexão de rede é a verificação de
+  versão nova, que apenas lê o redirecionamento de `github.com/MissionBreak56/Unfrag-Dark-/releases/latest`
+  (sem enviar dados). Dá para desligá-la em Opções → *Verificar atualizações ao iniciar*.
+* Requer execução como Administrador.
 
 ## Desenvolvimento
 
 ```bash
 pip install -e . pytest
-pytest
+pytest                      # os testes de interface só rodam com display
+# Linux sem tela:  xvfb-run -a pytest
 ```
 
-Estrutura: `engine.py` (algoritmo), `freespace.py` (mapa de espaço livre), `backends/windows.py`
-(API do Windows), `backends/fake.py` (volume simulado), `diskmap.py`, `cli.py`, `gui.py`, `scheduler.py`.
+Estrutura de `src/unfrag/`:
 
-Veja também [`docs/ANALYSIS.md`](docs/ANALYSIS.md) (análise estática do instalador que motivou a
-lista de funcionalidades) e [`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md).
+| Módulo | Função |
+|---|---|
+| `engine.py` | algoritmo de análise e desfragmentação |
+| `freespace.py` | mapa de espaço livre (corridas, first-fit com dicas) |
+| `backends/windows.py` | API do Windows (bitmap, extents, mover clusters, SSD) |
+| `backends/fake.py` | volume simulado para testes e `--demo` |
+| `mft.py`, `ntfs.py` | leitura da MFT e decodificação de extents (partes puras, testáveis em qualquer sistema) |
+| `scan.py` | varredura em paralelo com ordem preservada |
+| `diskmap.py`, `palette.py` | mapa de blocos e paleta de cores |
+| `gui.py`, `widgets.py` | interface Tkinter (cartões, abas, botões desenhados em Canvas) |
+| `tray.py`, `notify.py`, `single.py`, `startup.py` | bandeja, avisos, instância única, início com o Windows |
+| `updater.py` | verificação de versão no GitHub |
+| `scheduler.py`, `system.py`, `cli.py` | agendamento, utilidades e linha de comando |
+
+Ferramentas em `tools/`: `make_icon.py` (gera o ícone), `make_screenshots.py` (gera as capturas) e
+`validate_windows.py` (validação no Windows real, usada pelo CI).
+
+Veja também [`docs/ANALYSIS.md`](docs/ANALYSIS.md) (análise estática do instalador que motivou a lista de
+funcionalidades) e [`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md).
 
 ## Licença
 
-MIT — veja [LICENSE](LICENSE).
-
-## Velocidade do modo Espaço livre
-
-* A busca de buracos (*first-fit*) usa dicas por classe de tamanho e pula direto para o primeiro trecho
-  que pode comportar o arquivo, em vez de varrer todos os trechos livres a cada arquivo (em um teste sintético
-  com 200 mil trechos livres: ~112 s → ~7 s para 60 mil buscas, com resultados idênticos).
-* A compactação para assim que não resta mais nenhum buraco antes dos arquivos que faltam.
-* A verificação final relê só o mapa de espaço livre e os arquivos que foram movidos, em paralelo
-  (respeitando *Threads de leitura*), em vez de reanalisar o volume inteiro. Use *Reanálise completa ao final*
-  (GUI) ou `--full-rescan` (CLI) para o comportamento antigo.
-* A CLI atualiza o progresso no máximo ~15 vezes por segundo (escrever no console a cada arquivo era lento).
-
-O tempo restante é dominado pela cópia real dos clusters pelo NTFS (`FSCTL_MOVE_FILE`), que depende do disco.
+MIT. Veja [LICENSE](LICENSE).
