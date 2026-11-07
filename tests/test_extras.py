@@ -146,3 +146,68 @@ def test_unopenable_files_are_skipped_not_failed():
         assert rep.defragmented == 0
     finally:
         vol.close()
+
+
+def test_toast_never_hangs_when_tray_does_not_answer(monkeypatch):
+    import sys
+    import time as _t
+    import types
+    from unfrag import notify
+
+    class StuckIcon:
+        def __init__(self, *a, **k):
+            self.stopped = False
+
+        def run(self, setup=None):
+            while not self.stopped:  # a bandeja nunca responde
+                _t.sleep(0.05)
+
+        def stop(self):
+            self.stopped = True
+
+    class Img:
+        @staticmethod
+        def open(p):
+            return types.SimpleNamespace(convert=lambda m: None)
+
+    monkeypatch.setattr(notify, "_is_windows", lambda: True)
+    monkeypatch.setitem(sys.modules, "pystray", types.SimpleNamespace(Icon=StuckIcon))
+    monkeypatch.setitem(sys.modules, "PIL", types.SimpleNamespace(Image=Img))
+    monkeypatch.setitem(sys.modules, "PIL.Image", Img)
+    monkeypatch.setenv("UNFRAG_TRAY", "1")
+    t0 = _t.time()
+    assert notify.toast("x", seconds=0.1, grace=0.3) is False  # bandeja muda: desiste em vez de travar
+    assert _t.time() - t0 < 5
+
+
+def test_toast_reports_success(monkeypatch):
+    import sys
+    import types
+    from unfrag import notify
+    shown = []
+
+    class OkIcon:
+        def __init__(self, *a, **k):
+            self.visible = False
+
+        def run(self, setup=None):
+            setup(self)
+
+        def notify(self, msg, title):
+            shown.append((title, msg))
+
+        def stop(self):
+            pass
+
+    class Img:
+        @staticmethod
+        def open(p):
+            return types.SimpleNamespace(convert=lambda m: None)
+
+    monkeypatch.setattr(notify, "_is_windows", lambda: True)
+    monkeypatch.setitem(sys.modules, "pystray", types.SimpleNamespace(Icon=OkIcon))
+    monkeypatch.setitem(sys.modules, "PIL", types.SimpleNamespace(Image=Img))
+    monkeypatch.setitem(sys.modules, "PIL.Image", Img)
+    monkeypatch.setenv("UNFRAG_TRAY", "1")
+    assert notify.toast("pronto", seconds=0.05) is True
+    assert shown == [("Unfrag Dark", "pronto")]

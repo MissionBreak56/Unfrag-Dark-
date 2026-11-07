@@ -44,12 +44,19 @@ def fail(title: str, msg: str) -> None:
     FAILURES.append("%s: %s" % (title, msg))
 
 
+_STEP = {"name": "", "start": 0}
+
+
 def group(name: str) -> None:
     print("::group::%s" % name, flush=True)
+    _STEP["name"], _STEP["start"] = name, len(SUMMARY)
 
 
 def endgroup() -> None:
+    """Publica as linhas da etapa assim que ela termina (assim, se uma etapa travar, as anteriores já saíram)."""
+    lines = SUMMARY[_STEP["start"]:]
     print("::endgroup::", flush=True)
+    print("::notice title=%s::%s" % (esc(_STEP["name"]), esc("\n".join(l[:700] for l in lines))), flush=True)
 
 
 def make_fragmented_files(n: int = 12, rounds: int = 60, chunk: int = 64 * 1024) -> dict:
@@ -224,7 +231,6 @@ def main() -> int:
     shutil.rmtree(TESTDIR, ignore_errors=True)
     print("\n===== RESUMO =====")
     print("\n".join(SUMMARY))
-    print("::notice title=Resumo da validacao::%s" % esc("\n".join(l[:600] for l in SUMMARY)), flush=True)
     if FAILURES:
         print("\n===== FALHAS =====")
         print("\n".join(FAILURES))
