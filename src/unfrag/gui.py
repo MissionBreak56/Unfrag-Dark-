@@ -553,16 +553,20 @@ class App:
 
         row = ttk.Frame(right, style="Root.TFrame")
         row.pack(fill="x")
-        c1 = self._card(row)
+        c1 = self._card(row, pad=(12, 12))
         c1.pack(side="left", padx=(0, 8))
-        c2 = self._card(row)
-        c2.pack(side="left")
+        c2 = self._card(row, pad=(12, 12))
+        # os dois cartões de estatísticas têm a mesma altura; o da última execução ocupa o resto da largura
+        c1.pack_configure(fill="y")
+        c2.pack(side="left", fill="both", expand=True)
+        for _c in (c1, c2):
+            _c.inner.rowconfigure(0, weight=1)
         for i, (key, lbl) in enumerate((("frag", "Fragmentação"), ("fragfiles", "Arquivos fragmentados"),
                                         ("frags", "Fragmentos"), ("free", "Espaço livre"),
                                         ("largest", "Maior trecho livre"), ("moved", "Última execução"))):
             host = c1.inner if i < 5 else c2.inner
             f = ttk.Frame(host)
-            f.grid(row=0, column=i, padx=(0, 22), sticky="w")
+            f.grid(row=0, column=i, padx=(0, 14 if i < 4 else 0), sticky="w")
             ttk.Label(f, text=lbl.upper(), foreground=C["fg"], font=("Segoe UI Semibold", 8)).pack(anchor="w")
             ttk.Label(f, textvariable=self.stats[key], style="Big.TLabel" if i == 0 else "Panel.TLabel",
                       font=("Segoe UI Semibold", 20) if i == 0 else ("Segoe UI Semibold", 12)).pack(anchor="w")

@@ -79,4 +79,4 @@ jobs:
           gh release create "${{ github.ref_name }}" dist/* \
             --repo "${{ github.repository }}" \
             --title "Unfrag Dark ${{ github.ref_name }}" \
-            --notes "Primeira versão. UnfragDark.exe (interface gráfica escura) e unfrag.exe (linha de comando). Ambos pedem execução como Administrador. O backend Windows ainda não foi validado em hardware real: faça backup e comece por 'unfrag analyze C:'. Use '--demo' para testar sem tocar em discos."
+            --notes "Unfrag Dark. UnfragDark.exe (interface gráfica escura) e unfrag.exe (linha de comando). Ambos pedem execução como Administrador. Validado em Windows NTFS no CI, mas não em hardware variado: faça backup e comece por 'unfrag analyze C:'. Use '--demo' para testar sem tocar em discos."
