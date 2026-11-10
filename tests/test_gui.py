@@ -355,3 +355,86 @@ def test_last_scheduled_run_is_logged(tmp_path, monkeypatch):
         assert "C: fragmentação 5.0% → 0.1%" in a.log.get("1.0", "end")
     finally:
         a.quit_app()
+
+
+# ---- campos numéricos, SSD/TRIM e desligar -------------------------------------------------------
+def test_num_tolerates_empty_or_invalid_fields():
+    class Broken:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def get(self):
+            raise self.exc
+
+    assert gui._num(Broken(tk.TclError("expected integer but got \"\"")), int, 7) == 7
+    assert gui._num(Broken(ValueError()), float, 1.5) == 1.5
+
+    class Val:
+        def __init__(self, v):
+            self.v = v
+
+        def get(self):
+            return self.v
+
+    assert gui._num(Val(150), float, 0.0, 0.0, 100.0) == 100.0
+    assert gui._num(Val(-5), int, 0, 0) == 0
+    assert gui._num(Val(""), int, 3) == 0  # vazio conta como 0
+
+
+def test_invalid_numeric_field_does_not_break_saving_or_closing(app):
+    app.v_minfrag.set("abc")   # o usuário digitou texto no campo
+    app.v_large.set("")
+    app._persist()             # não pode estourar (era um TclError que impedia fechar o programa)
+    assert app.settings is not None
+    app.quit_app()
+
+
+def test_ssd_defrag_offers_trim_instead(app, monkeypatch):
+    asked = []
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda t, m, **k: asked.append(m) or True)
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *a, **k: None)
+    app.tree.selection_set("E")   # SSD da demonstração
+    app.root.update()
+    app.start("defrag")
+    assert asked and "SSD" in asked[0] and "TRIM" in asked[0]
+    assert pump(app, lambda: app.worker is not None)
+    assert pump(app, lambda: not app._is_busy())
+    pump(app, lambda: "TRIM" in app.v_status.get(), timeout=5)
+    assert "TRIM" in app.v_status.get()
+
+
+def test_ssd_defrag_declined_does_nothing(app, monkeypatch):
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: False)
+    app.tree.selection_set("E")
+    app.root.update()
+    app.start("quick")
+    assert app.worker is None and not app._is_busy()
+
+
+def test_trim_on_hdd_is_refused(app, monkeypatch):
+    shown = []
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda t, m, **k: shown.append(m))
+    app.tree.selection_set("C")   # HDD da demonstração
+    app.root.update()
+    app.start("trim")
+    assert shown and "HDD" in shown[0] and app.worker is None
+
+
+def test_shutdown_only_after_a_successful_operation(app, monkeypatch):
+    calls = []
+    monkeypatch.setattr(gui, "shutdown_soon", lambda s=60: calls.append(s))
+    app.v_shutdown.set(True)
+    app._last_mode = "defrag"
+    app._result_state = "error"
+    app._handle(("done",))
+    assert not calls                      # falhou: não desliga
+    app._result_state = "idle"
+    app._handle(("done",))
+    assert not calls                      # foi ignorado/cancelado: não desliga
+    app._last_mode = "analyze"
+    app._result_state = "done"
+    app._handle(("done",))
+    assert not calls                      # só análise: não desliga
+    app._last_mode = "defrag"
+    app._handle(("done",))
+    assert calls == [60]

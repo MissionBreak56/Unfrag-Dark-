@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 
 from . import __version__, diskmap, palette, scheduler, startup, updater
 from .backends import IS_WINDOWS, list_drives, open_volume
-from .engine import Cancelled, Engine, Options, Report, SsdSkipped
+from .engine import Cancelled, Engine, Options, Report, SsdSkipped, TrimNotApplicable
 from .model import AnalysisResult, DriveInfo
 from .single import SingleInstance, show_already_running
 from .system import load_last_run, MAX_THREADS, auto_threads, fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
@@ -32,11 +32,25 @@ def cell_colors() -> Dict[int, str]:
 
 
 PHASES = {"scan": "Analisando arquivos", "defrag": "Desfragmentando", "compact": "Compactando espaço livre",
-          "toend": "Movendo arquivos grandes para o fim"}
+          "toend": "Movendo arquivos grandes para o fim", "trim": "Otimizando (TRIM)"}
 FONT = ("Segoe UI", 10)
 BLOCK_HINT = "Clique em um quadrado do mapa para ver qual bloco é e quais arquivos fragmentados estão nele."
 STATE_NAMES = {diskmap.FREE: "Livre", diskmap.USED: "Em uso", diskmap.USED_FULL: "Em uso",
                diskmap.FRAGMENTED: "Fragmentado", diskmap.UNMOVABLE: "Não movível"}
+
+
+def _num(var, cast=int, default=0, lo=None, hi=None):
+    """Lê um número de uma variável do Tk sem estourar: campo vazio ou com texto inválido
+    (o usuário apagou o valor de um Spinbox, por exemplo) vira `default` em vez de TclError."""
+    try:
+        v = cast(var.get() or 0)
+    except (tk.TclError, ValueError, TypeError):
+        return default
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
 
 
 def _dark_titlebar(root: tk.Tk) -> None:
@@ -124,6 +138,10 @@ MODE_HELP = {
                   "buracos do início (até 4 passadas), juntando o espaço livre em um grande bloco no "
                   "final. Assim os próximos arquivos já são gravados sem fragmentar. É o mais "
                   "demorado e move muitos arquivos."),
+    "trim": ("Otimizar SSD",
+             "A manutenção certa para SSD: envia o TRIM do espaço livre para a unidade (o mesmo que a "
+             "\"Otimização de unidades\" do Windows faz). Não move nem reescreve arquivos, então não "
+             "gasta a vida útil do SSD. Não se aplica a HDD."),
 }
 
 
@@ -459,7 +477,8 @@ class App:
     def _vars(self) -> None:
         s = self.settings
         self.v_shutdown = tk.BooleanVar(value=False)
-        self.v_force_ssd = tk.BooleanVar(value=s.get("force_ssd", False))
+        self.v_force_ssd = tk.BooleanVar(value=False)  # nunca lembrado: forçar a desfragmentação de um SSD vale só por esta sessão
+        self._last_mode = ""
         self.v_battery = tk.BooleanVar(value=s.get("skip_battery", True))
         self.v_recurse = tk.BooleanVar(value=True)
         self.v_large = tk.IntVar(value=s.get("move_large_mb", 0))
@@ -499,7 +518,7 @@ class App:
         bar.pack(side="right")
         self.btns = []
         for text, mode in (("Analisar", "analyze"), ("Desfragmentar", "defrag"), ("Rápida", "quick"),
-                           ("Espaço livre", "freespace")):
+                           ("Espaço livre", "freespace"), ("Otimizar SSD", "trim")):
             b = PillButton(bar, text, command=lambda m=mode: self.start(m), bg=C["bg"])
             b.pack(side="left", padx=(0, 8))
             ToolTip(b, *MODE_HELP[mode])
@@ -783,8 +802,9 @@ class App:
 
         ttk.Checkbutton(f, text="Desfragmentar SSD mesmo assim (não recomendado)", variable=self.v_force_ssd).grid(row=r, column=0, columnspan=4, sticky="w")
         r += 1
-        note("Por padrão, SSDs são ignorados: não têm cabeça mecânica, não ganham desempenho e a reescrita "
-             "só gasta a vida útil. Marque apenas se souber o que está fazendo.")
+        note("Por padrão, SSDs não são desfragmentados: não têm cabeça mecânica, não ganham desempenho e a "
+             "reescrita só gasta a vida útil. Para SSD use o botão Otimizar SSD (TRIM). Esta opção vale só "
+             "até fechar o programa; marque apenas se souber o que está fazendo.")
 
         ttk.Checkbutton(f, text="Reanálise completa ao final (mais lenta)", variable=self.v_fullscan).grid(row=r, column=0, columnspan=4, sticky="w")
         r += 1
@@ -814,10 +834,11 @@ class App:
         ttk.Entry(f, textvariable=self.v_sched_time, width=8).grid(row=5, column=0, sticky="w", pady=(2, 2))
         sf.note(f, "Hora do dia no formato 24 h, por exemplo 03:00. Escolha um horário em que o PC esteja ligado e ocioso.", 6)
         ttk.Label(f, text="Modo", font=("Segoe UI Semibold", 10)).grid(row=7, column=0, sticky="w")
-        ttk.Combobox(f, textvariable=self.v_sched_mode, values=["quick", "defrag", "freespace"], width=12,
+        ttk.Combobox(f, textvariable=self.v_sched_mode, values=list(scheduler.MODES), width=12,
                      state="readonly").grid(row=8, column=0, sticky="w", pady=(2, 2))
         sf.note(f, "quick = rápida (só arquivos até 256 MB, ideal para o dia a dia); defrag = completa; "
-                   "freespace = completa + consolida o espaço livre (mais demorada).", 9)
+                   "freespace = completa + consolida o espaço livre (mais demorada); "
+                   "trim = otimização de SSD (use em SSD, no lugar da desfragmentação).", 9)
         btns = ttk.Frame(f)
         btns.grid(row=10, column=0, sticky="w")
         ttk.Button(btns, text="Criar tarefa", style="Accent.TButton", command=lambda: self._schedule("create")).pack(side="left")
@@ -882,22 +903,39 @@ class App:
         if not d.supported:
             messagebox.showwarning("Unfrag Dark", "Unidade não suportada: %s" % d.note)
             return
+        if mode == "trim" and d.kind == "HDD":
+            messagebox.showinfo("Unfrag Dark", "O TRIM só vale para SSD, e %s: é um HDD. "
+                                               "Use Desfragmentar ou Rápida." % letter)
+            return
+        if mode not in ("analyze", "trim") and d.kind == "SSD" and not self.v_force_ssd.get():
+            # SSD: desfragmentar não ajuda e gasta a unidade; oferece a otimização certa (TRIM)
+            if root_path is None:
+                if messagebox.askyesno("Unfrag Dark", "%s: é um SSD. Desfragmentar não melhora o desempenho de "
+                                                      "um SSD e só gasta a vida útil dele.\n\nExecutar a "
+                                                      "otimização TRIM, a manutenção indicada para SSD?" % letter):
+                    self.start("trim")
+            else:
+                messagebox.showinfo("Unfrag Dark", "%s: é um SSD, então o arquivo não será desfragmentado "
+                                                   "(não melhora o desempenho e gasta a unidade)." % letter)
+            return
         if mode != "analyze":
             reason = guard_reason(self.v_battery.get(), [p for p in self.v_exclude.get().split(",") if p.strip()])
             if reason:
                 messagebox.showinfo("Unfrag Dark", "Não executado: %s." % reason)
                 return
-            if self.demo is False and not messagebox.askyesno(
-                    "Confirmar", "Desfragmentar %s: no modo '%s'?\nFaça backup dos dados importantes antes." % (letter, mode)):
+            what = ("Executar a otimização (TRIM) em %s:?" % letter) if mode == "trim" else (
+                "Desfragmentar %s: no modo '%s'?\nFaça backup dos dados importantes antes." % (letter, mode))
+            if self.demo is False and not messagebox.askyesno("Confirmar", what):
                 return
         self._persist()
         threads = self._threads()
         path = root_path if root_path is not None else (self.v_path.get().strip() or None)
-        opts = Options(mode="defrag" if mode == "analyze" else mode, root=path, recurse=self.v_recurse.get(),
-                       move_large_mb=int(self.v_large.get() or 0),
+        opts = Options(mode="defrag" if mode in ("analyze", "trim") else mode, root=path, recurse=self.v_recurse.get(),
+                       move_large_mb=_num(self.v_large, int, 0, 0),
                        move_exts=[e.strip() for e in self.v_exts.get().split(",") if e.strip()],
-                       force_ssd=self.v_force_ssd.get(), min_fragmentation=float(self.v_minfrag.get() or 0),
+                       force_ssd=self.v_force_ssd.get(), min_fragmentation=_num(self.v_minfrag, float, 0.0, 0.0, 100.0),
                        full_rescan=self.v_fullscan.get())
+        self._last_mode = mode
         self.cancel.clear()
         self._use_mft = self.v_mft.get()  # lido aqui (thread da interface); a thread de trabalho só usa a cópia
         self._result_state = "done"
@@ -919,24 +957,31 @@ class App:
             return
         vol.threads = threads
         vol.use_mft = bool(getattr(self, "_use_mft", False))
+        prev_engine, eng = self.engine, None
         try:
             eng = Engine(vol, progress=prog, cancel=self.cancel)
-            self.engine = eng
-            if mode == "analyze":
-                res = eng.analyze(opts.root, opts.recurse)
-                self.q.put(("analysis", res, None))
+            if mode == "trim":  # não analisa nem mexe no mapa que já está na tela
+                self.q.put(("trim_done", eng.trim()))
             else:
-                rep = eng.defragment(opts)
-                self.q.put(("analysis", rep.after, rep))
-            from .cli import _scan_method
-            method = _scan_method(vol)
-            if method:
-                self.q.put(("log", method))
-        except SsdSkipped as exc:
+                self.engine = eng
+                if mode == "analyze":
+                    res = eng.analyze(opts.root, opts.recurse)
+                    self.q.put(("analysis", res, None))
+                else:
+                    rep = eng.defragment(opts)
+                    self.q.put(("analysis", rep.after, rep))
+                from .cli import _scan_method
+                method = _scan_method(vol)
+                if method:
+                    self.q.put(("log", method))
+        except (SsdSkipped, TrimNotApplicable) as exc:
+            self.engine = prev_engine  # nada foi analisado: mantém o mapa que já estava na tela
             self.q.put(("info", "%s." % exc))
         except Cancelled:
             self.q.put(("info", "Operação cancelada."))
         except Exception as exc:
+            if eng is not None and not eng.result.total_clusters:
+                self.engine = prev_engine  # falhou antes de analisar qualquer coisa
             self.q.put(("error", "Erro: %s" % exc))
         finally:
             vol.close()
@@ -962,7 +1007,9 @@ class App:
         if kind == "progress":
             _, phase, done, total, msg = m
             label = PHASES.get(phase, phase)
-            if total:
+            if phase == "trim":
+                self.v_status.set(msg or label)
+            elif total:
                 if str(self.progress.cget("mode")) != "determinate":
                     self.progress.stop()
                     self.progress.configure(mode="determinate")
@@ -977,6 +1024,18 @@ class App:
             self._show_result(res, rep)
         elif kind == "log":
             self._log(m[1])
+        elif kind == "trim_done":
+            rep = m[1]
+            if rep.cancelled:
+                self._result_state, msg = "idle", "Otimização (TRIM) cancelada."
+            elif rep.failed:
+                self._result_state, msg = "error", "O TRIM falhou: %s" % rep.failed[0][1]
+            else:
+                self._result_state, msg = "done", "Otimização (TRIM) concluída em %.1f s." % rep.seconds
+            self.v_status.set(msg)
+            self._log(msg)
+            for n in rep.notes:
+                self._log("  " + n)
         elif kind == "info":
             self._result_state = "idle"
             self.v_status.set(m[1])
@@ -1011,8 +1070,9 @@ class App:
             if self._hidden and self.tray:
                 self.tray.set_title("Unfrag Dark")
                 self.tray.notify(self.v_status.get()[:200] or "Operação concluída.")
-            if self.v_shutdown.get() and self.engine and not self.cancel.is_set():
-                self._log("Desligando em 60 s…")
+            if (self.v_shutdown.get() and self._result_state == "done" and self._last_mode != "analyze"
+                    and not self.cancel.is_set()):  # só depois de uma operação que terminou bem
+                self._log("Desligando em 60 s… (para cancelar: shutdown /a)")
                 shutdown_soon(60)
 
     def refresh_drives_keep(self) -> None:
@@ -1097,7 +1157,7 @@ class App:
         rows = sorted(getattr(self, "_file_rows", []), key=lambda r: r[idx], reverse=desc)[:5000]
         self.files_tree.delete(*self.files_tree.get_children())
         for fr, size, path, blk in rows:
-            self.files_tree.insert("", "end", values=(fr, fmt_bytes(size), path, blk), tags=(path,))
+            self.files_tree.insert("", "end", values=(fr, fmt_bytes(size), path, blk))
 
     # --- bloco do mapa -----------------------------------------------------------
     def _cell_at(self, ev) -> Optional[int]:
@@ -1219,16 +1279,21 @@ class App:
         letter = self._selected_letter()
         if not letter:
             return
-        if action == "create":
-            extra = []
-            if self.v_large.get():
-                extra.append("--move-large %d" % self.v_large.get())
-            if self._threads():
-                extra.append("--threads %d" % self._threads())
-            args = scheduler.build_create_args(letter, self.v_sched_mode.get(), self.v_sched_freq.get(),
-                                               self.v_sched_time.get(), " ".join(extra))
-        else:
-            args = scheduler.build_delete_args(letter, self.v_sched_freq.get())
+        try:
+            if action == "create":
+                extra = []
+                large = _num(self.v_large, int, 0, 0)
+                if large:
+                    extra.append("--move-large %d" % large)
+                if self._threads():
+                    extra.append("--threads %d" % self._threads())
+                args = scheduler.build_create_args(letter, self.v_sched_mode.get(), self.v_sched_freq.get(),
+                                                   self.v_sched_time.get(), " ".join(extra))
+            else:
+                args = scheduler.build_delete_args(letter, self.v_sched_freq.get())
+        except ValueError as exc:
+            messagebox.showerror("Unfrag Dark", str(exc))
+            return
         if not IS_WINDOWS:
             self._log("(simulado) " + " ".join(args))
             messagebox.showinfo("Unfrag Dark", "Fora do Windows o agendamento é só simulado:\n\n" + " ".join(args))
@@ -1241,9 +1306,9 @@ class App:
             messagebox.showerror("Unfrag Dark", str(exc))
 
     def _persist(self) -> None:
-        save_settings(dict(force_ssd=self.v_force_ssd.get(), skip_battery=self.v_battery.get(),
-                           move_large_mb=int(self.v_large.get() or 0), move_exts=self.v_exts.get(),
-                           min_frag=float(self.v_minfrag.get() or 0), exclude=self.v_exclude.get(),
+        save_settings(dict(skip_battery=self.v_battery.get(),
+                           move_large_mb=_num(self.v_large, int, 0, 0), move_exts=self.v_exts.get(),
+                           min_frag=_num(self.v_minfrag, float, 0.0, 0.0, 100.0), exclude=self.v_exclude.get(),
                            threads=self._threads(), full_rescan=self.v_fullscan.get(),
                            close_to_tray=self.v_tray.get(), colors=self.base,
                            use_mft=self.v_mft.get(), check_updates=self.v_updates.get(),

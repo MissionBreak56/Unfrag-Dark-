@@ -65,7 +65,8 @@ unfrag --demo defrag C: --mode freespace
 | Mapa de disco (livre / em uso / fragmentado / não movível) | ✔ | — |
 | **Clicar em um bloco do mapa:** detalhes do bloco e filtro da lista pelos arquivos que têm dados nele | ✔ | — |
 | Lista de arquivos fragmentados, ordenável | ✔ | — |
-| Proteção para SSD (ignorado, a menos que forçado) | ✔ | `--force-ssd` |
+| Proteção para SSD (não desfragmenta, a menos que forçado) | ✔ | `--force-ssd` |
+| **Otimizar SSD (TRIM):** a manutenção certa para SSD, sem mover nem reescrever arquivos | **Otimizar SSD** | `unfrag trim C:` |
 | Leitura direta da MFT para analisar mais rápido | Opções | `--mft` / `--no-mft` |
 | Threads de leitura da análise (1–64; 0 = automático) | Opções | `--threads N` |
 | Só executar se a fragmentação for ≥ X% | ✔ | `--min-frag 10` |
@@ -91,7 +92,8 @@ documentação de *Defragmenting Files*:
 * `FSCTL_GET_VOLUME_BITMAP`: mapa de clusters livres e ocupados;
 * `FSCTL_GET_RETRIEVAL_POINTERS`: extents de cada arquivo;
 * `FSCTL_MOVE_FILE`: o próprio NTFS move os clusters e mantém a integridade dos dados;
-* `IOCTL_STORAGE_QUERY_PROPERTY`: detecta SSD (sem penalidade de seek).
+* `IOCTL_STORAGE_QUERY_PROPERTY`: detecta SSD (sem penalidade de seek; se o driver não responde, usa o suporte a TRIM);
+* `defrag.exe /L`: o TRIM do espaço livre (o mesmo da "Otimização de unidades" do Windows), usado só em SSD.
 
 O algoritmo (`src/unfrag/engine.py`) é próprio:
 
@@ -142,8 +144,9 @@ unfrag defrag  C: [--mode defrag|quick|freespace] [--path PASTA] [--no-recurse]
                   [--move-large MB] [--move-ext .iso,.vhdx] [--min-frag PCT]
                   [--force-ssd] [--skip-battery] [--exclude APP.EXE] [--shutdown]
                   [--full-rescan] [--threads N] [--mft | --no-mft] [--notify]
+unfrag trim    C: [--skip-battery] [--exclude APP.EXE] [--shutdown] [--notify]   # otimização de SSD
 unfrag schedule create|delete C: [--frequency diária|semanal|mensal] [--time 03:00]
-                  [--mode quick] [--move-large MB] [--dry-run]
+                  [--mode quick|defrag|freespace|trim] [--move-large MB] [--dry-run]
 unfrag gui
 unfrag --demo ...          # volumes simulados, não toca em discos
 ```
@@ -153,6 +156,7 @@ Exemplos:
 ```bat
 unfrag defrag D: --mode freespace --move-large 1000 --skip-battery
 unfrag schedule create C: --frequency semanal --time 03:00 --mode quick
+unfrag schedule create E: --frequency semanal --time 03:00 --mode trim   # SSD
 ```
 
 ## Segurança, validação e privacidade
@@ -168,7 +172,10 @@ unfrag schedule create C: --frequency semanal --time 03:00 --mode quick
   e depois, e testa a tarefa de início com o Windows. Isso roda em uma máquina virtual do GitHub, então **não
   substitui** testes em discos e hardware variados: comece por `analyze` e por uma pasta de teste (`--path`)
   antes de desfragmentar a unidade inteira.
-* **SSD:** a desfragmentação é desnecessária e reduz a vida útil; o app ignora SSDs por padrão.
+* **SSD:** a desfragmentação é desnecessária e reduz a vida útil. O app recusa desfragmentar SSD (a checagem
+  vem antes da análise) e oferece a **otimização TRIM** no lugar. Só `--force-ssd` (ou a opção em Opções, que
+  vale só até fechar o programa) ignora isso. Se o tipo da unidade não puder ser identificado, o relatório avisa.
+  Em outras unidades que não sejam NTFS fixas (pendrives, cartões), a linha de comando também se recusa a agir.
 * **Privacidade:** tudo acontece localmente e não há telemetria. A única conexão de rede é a verificação de
   versão nova, que apenas lê o redirecionamento de `github.com/MissionBreak56/Unfrag-Dark-/releases/latest`
   (sem enviar dados). Dá para desligá-la em Opções → *Verificar atualizações ao iniciar*.

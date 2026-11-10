@@ -12,6 +12,7 @@ from __future__ import annotations
 import ctypes
 import os
 import struct
+import subprocess
 import sys
 import threading
 from ctypes import wintypes as wt
@@ -25,7 +26,7 @@ from .. import mft
 from ..ntfs import parse_retrieval
 from ..scan import parallel_scan
 from ..system import resolve_threads
-from .base import MoveError, VolumeBackend
+from .base import MoveError, VolumeBackend, root_error
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -41,6 +42,8 @@ FSCTL_GET_RETRIEVAL_POINTERS = 0x00090073
 FSCTL_GET_NTFS_VOLUME_DATA = 0x00090064
 FSCTL_MOVE_FILE = 0x00090074
 IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400
+STORAGE_SEEK_PENALTY_PROPERTY = 7   # StorageDeviceSeekPenaltyProperty
+STORAGE_TRIM_PROPERTY = 8           # StorageDeviceTrimProperty
 
 ERROR_HANDLE_EOF = 38
 ERROR_MORE_DATA = 234
@@ -120,20 +123,34 @@ def on_battery() -> bool:
     return st.ACLineStatus == 0
 
 
+def _query_flag(h: int, prop_id: int) -> Optional[bool]:
+    """IOCTL_STORAGE_QUERY_PROPERTY para propriedades cujo descritor termina com um BOOLEAN no
+    deslocamento 8 (DEVICE_SEEK_PENALTY_DESCRIPTOR e DEVICE_TRIM_DESCRIPTOR). None = sem resposta."""
+    q = STORAGE_PROPERTY_QUERY(prop_id, 0)  # PropertyStandardQuery
+    out = ctypes.create_string_buffer(16)
+    ret = wt.DWORD()
+    if not k32.DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, ctypes.byref(q), ctypes.sizeof(q),
+                               out, 16, ctypes.byref(ret), None) or ret.value < 9:
+        return None
+    return bool(out.raw[8])
+
+
 def _query_ssd(letter: str) -> Optional[bool]:
+    """True = SSD, False = HDD, None = não deu para saber.
+
+    Primeiro pergunta se o disco tem "seek penalty" (cabeça mecânica); se o driver não responde,
+    cai no suporte a TRIM, que só existe em mídia flash. Sem nenhuma resposta, devolve None."""
     try:
         h = _open("\\\\.\\%s:" % letter, 0, 0)
     except OSError:
         return None
     try:
-        q = STORAGE_PROPERTY_QUERY(7, 0)  # StorageDeviceSeekPenaltyProperty, PropertyStandardQuery
-        out = ctypes.create_string_buffer(16)
-        ret = wt.DWORD()
-        if not k32.DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, ctypes.byref(q), ctypes.sizeof(q),
-                                   out, 16, ctypes.byref(ret), None):
-            return None
-        incurs = out.raw[8]
-        return not bool(incurs)
+        incurs = _query_flag(h, STORAGE_SEEK_PENALTY_PROPERTY)
+        if incurs is not None:
+            return not incurs
+        if _query_flag(h, STORAGE_TRIM_PROPERTY):
+            return True
+        return None
     finally:
         k32.CloseHandle(h)
 
@@ -161,6 +178,16 @@ def list_drives() -> List[DriveInfo]:
         note = "" if ok else "somente NTFS em discos fixos é suportado"
         drives.append(DriveInfo(letter, label.value, fs.value, kind, total.value, free.value, ok, note))
     return drives
+
+
+def _summarize_output(raw: bytes) -> str:
+    """Últimas linhas da saída de um utilitário do Windows (código de página OEM do console)."""
+    try:
+        text = raw.decode("oem", "replace")
+    except LookupError:
+        text = raw.decode("cp850", "replace")
+    lines = [ln.strip() for ln in text.replace("\r", "").split("\n") if ln.strip()]
+    return " ".join(lines[-3:])
 
 
 class _ThreadCtx:
@@ -229,6 +256,36 @@ class WindowsVolume(VolumeBackend):
     def is_ssd(self) -> Optional[bool]:
         return self._ssd
 
+    @property
+    def supports_trim(self) -> bool:
+        return True
+
+    def retrim(self, cancel=None):
+        """TRIM do espaço livre pelo utilitário do próprio Windows (`defrag X: /L`, o mesmo usado pela
+        "Otimização de unidades"). Pode demorar em SSDs grandes; `cancel` encerra o processo."""
+        exe = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "defrag.exe")
+        try:
+            proc = subprocess.Popen([exe, "%s:" % self.letter, "/L"], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        except OSError as exc:
+            return False, "não foi possível executar o defrag.exe: %s" % exc
+        out = b""
+        while True:
+            try:
+                out, _ = proc.communicate(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel is not None and cancel.is_set():
+                    proc.terminate()
+                    try:
+                        out, _ = proc.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        out, _ = proc.communicate()
+                    return False, "cancelado"
+        return proc.returncode == 0, _summarize_output(out)
+
     def close(self) -> None:
         if getattr(self, "_vol", None):
             k32.CloseHandle(self._vol)
@@ -295,7 +352,7 @@ class WindowsVolume(VolumeBackend):
 
     def get_file(self, path: str) -> Optional[FileInfo]:
         try:
-            size = os.stat(path).st_size
+            size = os.stat(_long(path)).st_size  # \\?\: caminhos com mais de 260 caracteres também funcionam
             h = _open(_long(path), FILE_READ_ATTRIBUTES)
         except OSError:
             return None
@@ -351,12 +408,23 @@ class WindowsVolume(VolumeBackend):
                         continue
                     yield (e.path, size, attrs)
 
+    def _check_root(self, root: str) -> str:
+        """Análise parcial: o caminho tem de existir e estar NESTA unidade (caminhos de outra unidade
+        misturariam clusters de volumes diferentes)."""
+        root = os.path.abspath(root)
+        bad = root_error(root, self.letter)
+        if bad:
+            raise ValueError(bad)
+        if not os.path.exists(_long(root)):
+            raise FileNotFoundError("o caminho não existe: %s" % root)
+        return root
+
     def iter_files(self, root: Optional[str], recurse: bool) -> Iterator[FileInfo]:
         self.trivial_files = 0
         self.trivial_bytes = 0
         self.mft_used = False
         self.mft_error = None
-        root = root or ("%s:\\" % self.letter)
+        root = self._check_root(root) if root else "%s:\\" % self.letter
         if os.path.isfile(root):
             st = os.stat(root)
             info = self._scan(root, st.st_size, getattr(st, "st_file_attributes", 0))
@@ -367,7 +435,7 @@ class WindowsVolume(VolumeBackend):
         if self.use_mft and whole_volume:
             try:
                 entries = self._mft_entries()
-            except (mft.Unsupported, OSError, ValueError, struct.error, MemoryError) as exc:
+            except (mft.Unsupported, OSError, ValueError, IndexError, struct.error, MemoryError) as exc:
                 self.mft_error = "%s: %s" % (type(exc).__name__, exc)
                 entries = None
             if entries is not None:

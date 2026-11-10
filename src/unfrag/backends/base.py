@@ -2,13 +2,26 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Tuple
 
 from ..model import FileInfo
 
 
 class MoveError(Exception):
     """Falha ao mover clusters (arquivo em uso, destino ocupado, acesso negado...)."""
+
+
+def root_error(root: str, letter: str) -> Optional[str]:
+    """Mensagem de erro se `root` (pasta/arquivo da análise parcial) NÃO estiver na unidade `letter`.
+
+    Misturar caminhos de outra unidade com o mapa de clusters desta daria resultados errados."""
+    p = root[4:] if root.startswith("\\\\?\\") else root
+    if len(p) >= 2 and p[1] == ":":
+        if p[0].upper() != letter.upper().rstrip(":"):
+            return "o caminho %s não está na unidade %s:" % (root, letter.upper().rstrip(":"))
+    elif p.startswith("\\\\"):
+        return "caminhos de rede não são suportados (%s)" % root
+    return None
 
 
 class VolumeBackend(ABC):
@@ -25,6 +38,16 @@ class VolumeBackend(ABC):
     def is_ssd(self) -> Optional[bool]:
         """True/False quando conhecido; None quando não foi possível detectar."""
         return None
+
+    @property
+    def supports_trim(self) -> bool:
+        """O backend sabe pedir o TRIM (otimização) deste volume?"""
+        return False
+
+    def retrim(self, cancel=None) -> Tuple[bool, str]:
+        """Envia o TRIM do espaço livre ao SSD. Devolve (deu certo, texto do resultado).
+        `cancel` (threading.Event) interrompe a operação quando acionado."""
+        raise NotImplementedError("este backend não oferece TRIM")
 
     @abstractmethod
     def read_bitmap(self) -> bytes:

@@ -48,6 +48,13 @@ class SsdSkipped(Exception):
     """O volume é SSD e o usuário não forçou a desfragmentação."""
 
 
+class TrimNotApplicable(Exception):
+    """O TRIM não se aplica a este volume (HDD, ou backend sem suporte)."""
+
+
+MODES = ("defrag", "quick", "freespace")
+
+
 @dataclass
 class Options:
     mode: str = "defrag"  # defrag | quick | freespace
@@ -75,6 +82,7 @@ class Report:
     failed: List[Tuple[str, str]] = field(default_factory=list)
     skipped: List[Tuple[str, str]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    trimmed: bool = False
     cancelled: bool = False
     seconds: float = 0.0
 
@@ -168,11 +176,19 @@ class Engine:
     # --- desfragmentação ---------------------------------------------------
     def defragment(self, opts: Options) -> Report:
         t0 = time.time()
+        if opts.mode not in MODES:
+            raise ValueError("modo desconhecido: %r (use %s)" % (opts.mode, ", ".join(MODES)))
         report = Report(mode=opts.mode)
+        # SSD: confere ANTES de analisar (a análise de um volume grande demora minutos)
+        if self.backend.is_ssd and not opts.force_ssd:
+            raise SsdSkipped("o volume é um SSD: desfragmentar não melhora o desempenho e só gasta a vida "
+                             "útil da unidade; use a otimização TRIM (comando 'trim') ou, se tiver certeza, "
+                             "force a desfragmentação")
+        if self.backend.is_ssd is None:
+            report.notes.append("não foi possível identificar se o volume é SSD ou HDD; "
+                                "se for SSD, prefira a otimização TRIM")
         try:
             report.before = self.analyze(opts.root, opts.recurse)
-            if self.backend.is_ssd and not opts.force_ssd:
-                raise SsdSkipped("o volume é um SSD; use force_ssd para desfragmentar mesmo assim")
             if (report.before.fragmentation_percent < opts.min_fragmentation
                     and opts.mode != "freespace"):
                 report.notes.append("fragmentação abaixo do mínimo (%.1f%% < %.1f%%); nada a fazer"
@@ -192,6 +208,34 @@ class Engine:
             report.after = self.analyze(opts.root, opts.recurse)
         else:
             report.after = self._verify_touched(report)
+        report.seconds = time.time() - t0
+        return report
+
+    # --- TRIM (otimização de SSD) ----------------------------------------------
+    def trim(self) -> Report:
+        """Pede ao sistema o TRIM do espaço livre (a "otimização" certa para SSD).
+        Não move arquivos nem reescreve dados."""
+        t0 = time.time()
+        report = Report(mode="trim")
+        if self.backend.is_ssd is False:
+            raise TrimNotApplicable("o volume é um HDD: o TRIM só se aplica a SSD")
+        if not self.backend.supports_trim:
+            raise TrimNotApplicable("este volume não oferece a otimização TRIM")
+        if self.backend.is_ssd is None:
+            report.notes.append("não foi possível identificar o tipo de mídia; o Windows decide se o TRIM se aplica")
+        self._emit("trim", 0, 0, "enviando o TRIM ao SSD…")
+        try:
+            ok, text = self.backend.retrim(self.cancel)
+        except (OSError, NotImplementedError) as exc:
+            ok, text = False, str(exc)
+        if self.cancel.is_set():
+            report.cancelled = True
+        elif ok:
+            report.trimmed = True
+            if text:
+                report.notes.append(text)
+        else:
+            report.failed.append(("volume", text or "o TRIM falhou"))
         report.seconds = time.time() - t0
         return report
 

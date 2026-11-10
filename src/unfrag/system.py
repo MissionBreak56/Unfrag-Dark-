@@ -9,6 +9,8 @@ from typing import Iterable, Optional
 
 IS_WINDOWS = sys.platform == "win32"
 MAX_THREADS = 64
+# a interface (sem console) não pode piscar uma janela preta a cada subprocesso
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def auto_threads() -> int:
@@ -44,7 +46,8 @@ def guard_reason(skip_on_battery: bool = False, exclude_processes: Iterable[str]
             continue
         try:
             out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq %s" % name, "/NH"],
-                                 capture_output=True, text=True, timeout=15).stdout
+                                 capture_output=True, text=True, timeout=15,
+                                 creationflags=NO_WINDOW).stdout
         except Exception:
             continue
         if name.lower() in out.lower():
@@ -54,7 +57,7 @@ def guard_reason(skip_on_battery: bool = False, exclude_processes: Iterable[str]
 
 def shutdown_soon(seconds: int = 60) -> None:
     if IS_WINDOWS:
-        subprocess.run(["shutdown", "/s", "/t", str(seconds)], check=False)
+        subprocess.run(["shutdown", "/s", "/t", str(seconds)], check=False, creationflags=NO_WINDOW)
     else:
         print("(desligamento só é executado no Windows)")
 
@@ -64,20 +67,28 @@ def settings_path() -> str:
     return os.path.join(base, "unfrag-dark", "settings.json")
 
 
+def _write_json_atomic(path: str, data: dict, **kw) -> None:
+    """Grava em um arquivo temporário e troca pelo definitivo: se o programa for morto (ou faltar
+    energia) no meio da gravação, o arquivo antigo continua inteiro em vez de ficar cortado."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, **kw)
+    os.replace(tmp, path)
+
+
 def load_settings() -> dict:
     try:
         with open(settings_path(), "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
 def save_settings(data: dict) -> None:
     try:
-        p = settings_path()
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
+        _write_json_atomic(settings_path(), data, indent=2)
     except Exception:
         pass
 
@@ -98,9 +109,7 @@ def last_run_path() -> str:
 def save_last_run(info: dict) -> None:
     """Resumo da última execução (a interface mostra, inclusive as feitas por tarefa agendada)."""
     try:
-        os.makedirs(os.path.dirname(last_run_path()), exist_ok=True)
-        with open(last_run_path(), "w", encoding="utf-8") as fh:
-            json.dump(info, fh, ensure_ascii=False)
+        _write_json_atomic(last_run_path(), info, ensure_ascii=False)
     except OSError:
         pass
 

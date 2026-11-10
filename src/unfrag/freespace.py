@@ -21,6 +21,7 @@ def runs_from_bitmap(bitmap: bytes, total: int) -> List[Tuple[int, int]]:
     misto); só os bytes mistos são examinados bit a bit."""
     runs: List[Tuple[int, int]] = []
     run_start: Optional[int] = None
+    total = min(total, len(bitmap) * 8)  # o que o bitmap não cobre é desconhecido: nunca conta como livre
     bm = bitmap[:(total + 7) // 8]
     for m in _SEG.finditer(bm):
         base = m.start() * 8

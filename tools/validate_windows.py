@@ -5,6 +5,8 @@
 2. Desfragmentação real de uma pasta de teste com arquivos fragmentados de propósito (conteúdo
    conferido por hash antes e depois).
 3. Tarefa agendada de início com o Windows (criar / consultar / apagar), verificação de versão e aviso.
+4. Detecção de SSD, TRIM real (`defrag /L`), recusa de caminhos de outra unidade, caminho com mais de
+   260 caracteres e as checagens de unidade da linha de comando.
 
 Os resultados saem no log e como anotações (::notice / ::error), para serem lidos pela API do GitHub."""
 from __future__ import annotations
@@ -13,6 +15,7 @@ import hashlib
 import os
 import shutil
 import sys
+import threading
 import time
 import traceback
 
@@ -219,6 +222,71 @@ def step_misc() -> None:
         endgroup()
 
 
+def step_ssd_trim() -> None:
+    group("4. SSD, TRIM e validação de caminho")
+    try:
+        import types
+
+        from unfrag import cli
+
+        vol = open_volume(LETTER, demo=False)
+        try:
+            notice("Tipo de mídia", "is_ssd=%r | supports_trim=%r" % (vol.is_ssd, vol.supports_trim))
+            other = "Z" if LETTER.upper() != "Z" else "Y"
+            try:
+                list(vol.iter_files("%s:\\x" % other, True))
+                fail("Caminho de outra unidade foi aceito", other)
+            except ValueError as exc:
+                notice("Caminho de outra unidade", "recusado: %s" % exc)
+            try:
+                list(vol.iter_files("%s:\\unfrag_nao_existe_%d" % (LETTER, os.getpid()), True))
+                fail("Caminho inexistente foi aceito", "")
+            except FileNotFoundError as exc:
+                notice("Caminho inexistente", "recusado: %s" % exc)
+            # caminho com mais de 260 caracteres (precisa do prefixo \\?\ para existir)
+            deep = os.path.join(TESTDIR, *["pasta_com_nome_bem_longo_%02d" % i for i in range(12)])
+            deep_file = os.path.join(deep, "arquivo_profundo.bin")
+            try:
+                os.makedirs("\\\\?\\" + deep, exist_ok=True)
+                with open("\\\\?\\" + deep_file, "wb") as fh:
+                    fh.write(os.urandom(64 * 1024))
+                info = vol.get_file(deep_file)
+                notice("Caminho longo", "%d caracteres | get_file achou: %s | extents=%s" % (
+                    len(deep_file), info is not None, len(info.extents) if info else "-"))
+                if info is None:
+                    fail("get_file falhou em caminho longo", deep_file)
+            finally:
+                shutil.rmtree("\\\\?\\" + os.path.join(TESTDIR, "pasta_com_nome_bem_longo_00"), ignore_errors=True)
+            # checagens de unidade da linha de comando
+            ok = cli._drive_problem(types.SimpleNamespace(demo=False, drive="%s:" % LETTER))
+            bad = cli._drive_problem(types.SimpleNamespace(demo=False, drive="Q:"))
+            notice("CLI: unidade válida", "problema=%r (esperado: None)" % ok)
+            notice("CLI: unidade inexistente", "problema=%r" % bad)
+            if ok is not None:
+                fail("A unidade de teste foi recusada pela CLI", str(ok))
+            if not bad:
+                fail("Unidade inexistente não foi recusada pela CLI", "")
+            # TRIM de verdade (o runner pode ser HDD virtual: então o motor recusa)
+            from unfrag.engine import TrimNotApplicable
+            eng = Engine(vol)
+            timer = threading.Timer(600, eng.cancel.set)  # nunca prende o CI: cancela o TRIM após 10 min
+            timer.start()
+            try:
+                rep = eng.trim()
+                notice("TRIM", "trimmed=%s | cancelado=%s | falhas=%s | notas=%s | %.1fs" % (
+                    rep.trimmed, rep.cancelled, rep.failed, rep.notes, rep.seconds))
+            except TrimNotApplicable as exc:
+                notice("TRIM", "não se aplica: %s" % exc)
+            finally:
+                timer.cancel()
+        finally:
+            vol.close()
+    except Exception:
+        fail("Etapa de SSD/TRIM falhou com exceção", traceback.format_exc()[-1500:])
+    finally:
+        endgroup()
+
+
 def main() -> int:
     notice("Ambiente", "Python %s | administrador: %s | unidade %s:" % (sys.version.split()[0], is_admin(), LETTER))
     if not is_admin():
@@ -228,6 +296,7 @@ def main() -> int:
     if os.path.isdir(TESTDIR):
         step_defrag()
     step_misc()
+    step_ssd_trim()
     shutil.rmtree(TESTDIR, ignore_errors=True)
     print("\n===== RESUMO =====")
     print("\n".join(SUMMARY))

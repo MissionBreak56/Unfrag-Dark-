@@ -8,14 +8,14 @@ import sys
 import time
 from typing import List, Optional
 
-from . import __version__
+from . import __version__, scheduler
 from .backends import IS_WINDOWS, list_drives, open_volume
-from .engine import Engine, Options, Report, SsdSkipped
+from .engine import Engine, Options, Report, SsdSkipped, TrimNotApplicable
 from .model import AnalysisResult
 from .system import MAX_THREADS, auto_threads, fmt_bytes, guard_reason, shutdown_soon
 
 PHASES = {"scan": "Analisando", "defrag": "Desfragmentando", "compact": "Compactando espaço livre",
-          "toend": "Movendo arquivos grandes para o fim"}
+          "toend": "Movendo arquivos grandes para o fim", "trim": "Otimizando (TRIM)"}
 
 
 _last_progress = [0.0]
@@ -30,7 +30,7 @@ def _progress(phase: str, done: int, total: int, msg: str) -> None:
     _last_progress[0] = now
     label = PHASES.get(phase, phase)
     tail = msg[-48:] if msg else ""
-    cnt = "%d/%d" % (done, total) if total else str(done)
+    cnt = "%d/%d" % (done, total) if total else ("" if phase == "trim" else str(done))
     sys.stdout.write("\r%-34s %-12s %-48s" % (label, cnt, tail))
     sys.stdout.flush()
 
@@ -79,6 +79,24 @@ def cmd_list(args) -> int:
     return 0
 
 
+def _drive_problem(args) -> Optional[str]:
+    """Motivo para NÃO mexer nesta unidade (não existe, não é NTFS fixo, falta admin) ou None."""
+    if args.demo or not IS_WINDOWS:
+        return None
+    letter = args.drive.rstrip(":\\/").upper()
+    for d in list_drives(False):
+        if d.letter == letter:
+            if not d.supported:
+                return "a unidade %s: não é suportada (%s)." % (letter, d.note)
+            break
+    else:
+        return "a unidade %s: não foi encontrada." % letter
+    from .backends.windows import is_admin
+    if not is_admin():
+        return "execute como Administrador (a API de desfragmentação exige)."
+    return None
+
+
 def _open(args):
     letter = args.drive
     vol = open_volume(letter, demo=args.demo, delay=0.0)
@@ -97,6 +115,10 @@ def _scan_method(vol) -> str:
 
 
 def cmd_analyze(args) -> int:
+    problem = _drive_problem(args)
+    if problem:
+        print("Não executado: %s" % problem)
+        return 2
     with _open(args) as vol:
         eng = Engine(vol, progress=_progress)
         r = eng.analyze(args.path, not args.no_recurse)
@@ -113,11 +135,10 @@ def cmd_defrag(args) -> int:
         print("Não executado: %s." % reason)
         _finish_run(args, args.drive, None, "Execução agendada de %s não realizada: %s." % (args.drive.upper().rstrip(":") + ":", reason), False)
         return 3
-    if IS_WINDOWS and not args.demo:
-        from .backends.windows import is_admin
-        if not is_admin():
-            print("Execute como Administrador (a API de desfragmentação exige).")
-            return 2
+    problem = _drive_problem(args)
+    if problem:
+        print("Não executado: %s" % problem)
+        return 2
     exts = [e.strip() for e in (args.move_ext or "").split(",") if e.strip()]
     opts = Options(mode=args.mode, root=args.path, recurse=not args.no_recurse,
                    move_large_mb=args.move_large, move_exts=exts, force_ssd=args.force_ssd,
@@ -142,6 +163,46 @@ def cmd_defrag(args) -> int:
     return 1 if rep.failed else 0
 
 
+def cmd_trim(args) -> int:
+    """Otimização de SSD (TRIM): a manutenção certa para SSD, no lugar da desfragmentação."""
+    d = args.drive.upper().rstrip(":\\/") + ":"
+    reason = guard_reason(args.skip_battery, args.exclude or [])
+    if reason:
+        print("Não executado: %s." % reason)
+        _finish_run(args, args.drive, None, "Otimização (TRIM) de %s não realizada: %s." % (d, reason), False)
+        return 3
+    problem = _drive_problem(args)
+    if problem:
+        print("Não executado: %s" % problem)
+        return 2
+    with _open(args) as vol:
+        eng = Engine(vol, progress=_progress)
+        try:
+            rep = eng.trim()
+        except TrimNotApplicable as exc:
+            print("\n%s." % exc)
+            _finish_run(args, args.drive, None, "%s." % exc, False)
+            return 4
+        except KeyboardInterrupt:
+            eng.cancel.set()
+            print("\nCancelado.")
+            return 130
+    print()
+    for n in rep.notes:
+        print("Nota:", n)
+    if rep.cancelled:
+        msg, ok = "Otimização (TRIM) de %s cancelada." % d, False
+    elif rep.failed:
+        msg, ok = "Otimização (TRIM) de %s falhou: %s" % (d, rep.failed[0][1]), False
+    else:
+        msg, ok = "Otimização (TRIM) de %s concluída em %.0f s." % (d, rep.seconds), True
+    print(msg)
+    _finish_run(args, args.drive, rep, msg, ok)
+    if args.shutdown and ok:
+        shutdown_soon(60)
+    return 0 if ok else 1
+
+
 def cmd_startup(args) -> int:
     from . import startup
     if args.action == "status":
@@ -159,7 +220,7 @@ def _finish_run(args, drive: str, rep: Optional[Report], message: str, ok: bool)
     """Guarda o resumo da execução e, se pedido (--notify, usado pelas tarefas agendadas), avisa no Windows."""
     from .system import save_last_run
     save_last_run({"when": time.strftime("%Y-%m-%d %H:%M:%S"), "drive": drive.upper().rstrip(":") + ":",
-                   "mode": getattr(args, "mode", ""), "ok": ok, "message": message,
+                   "mode": getattr(args, "mode", None) or getattr(args, "cmd", ""), "ok": ok, "message": message,
                    "scheduled": bool(getattr(args, "notify", False))})
     if getattr(args, "notify", False):
         from .notify import toast
@@ -179,7 +240,6 @@ def _report_message(drive: str, rep: Report) -> str:
 
 
 def cmd_schedule(args) -> int:
-    from . import scheduler
     if args.action == "create":
         parts = []
         if args.move_large:
@@ -258,7 +318,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--move-ext", default="", help="extensões para mover ao fim, ex.: .iso,.vhdx")
     d.add_argument("--min-frag", type=float, default=0.0, metavar="PCT",
                    help="só desfragmenta se a fragmentação for pelo menos PCT%%")
-    d.add_argument("--force-ssd", action="store_true", help="desfragmenta mesmo sendo SSD (não recomendado)")
+    d.add_argument("--force-ssd", action="store_true",
+                   help="desfragmenta mesmo sendo SSD (não recomendado: use o comando trim)")
     d.add_argument("--skip-battery", action="store_true", help="não executa se estiver na bateria")
     d.add_argument("--exclude", action="append", metavar="PROC.EXE",
                    help="não executa se este processo estiver rodando (repetível)")
@@ -270,12 +331,22 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--notify", action="store_true", help="mostra um aviso do Windows ao terminar (usado pelas tarefas agendadas)")
     d.set_defaults(fn=cmd_defrag)
 
+    t = sub.add_parser("trim", help="otimiza um SSD (TRIM do espaço livre), a manutenção certa para SSD")
+    t.add_argument("drive", help="unidade, ex.: C:")
+    t.add_argument("--skip-battery", action="store_true", help="não executa se estiver na bateria")
+    t.add_argument("--exclude", action="append", metavar="PROC.EXE",
+                   help="não executa se este processo estiver rodando (repetível)")
+    t.add_argument("--shutdown", action="store_true", help="desliga o PC ao terminar")
+    t.add_argument("--notify", action="store_true", help="mostra um aviso do Windows ao terminar (usado pelas tarefas agendadas)")
+    t.set_defaults(fn=cmd_trim)
+
     s = sub.add_parser("schedule", help="cria/remove tarefa agendada (Windows)")
     s.add_argument("action", choices=["create", "delete"])
     s.add_argument("drive")
     s.add_argument("--frequency", choices=["diária", "semanal", "mensal"], default="semanal")
     s.add_argument("--time", default="03:00", help="HH:MM")
-    s.add_argument("--mode", choices=["defrag", "quick", "freespace"], default="quick")
+    s.add_argument("--mode", choices=list(scheduler.MODES), default="quick",
+                   help="trim = otimização de SSD (use em SSD no lugar da desfragmentação)")
     s.add_argument("--move-large", type=int, default=0)
     _threads_arg(s)
     s.add_argument("--dry-run", action="store_true", help="só mostra o comando do schtasks")
@@ -288,7 +359,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     if not getattr(args, "fn", None):
         args = parser.parse_args((argv or []) + ["gui"])
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except (OSError, ValueError) as exc:  # mensagem clara em vez de um traceback
+        print("\nErro: %s" % exc)
+        return 2
 
 
 if __name__ == "__main__":

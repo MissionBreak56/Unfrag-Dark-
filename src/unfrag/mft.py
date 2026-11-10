@@ -152,6 +152,8 @@ def parse_record(rec: bytearray) -> Optional[Parsed]:
         elif atype == ATTR_FILE_NAME:
             if not nonres:
                 co = pos + _U16.unpack_from(rec, pos + 20)[0]
+                if co + 66 > limit:
+                    return None  # registro corrompido: o conteúdo cai fora do registro
                 nlen = rec[co + 64]
                 if co + 66 + 2 * nlen <= limit:
                     parent = _U64.unpack_from(rec, co)[0] & INDEX_MASK
@@ -192,7 +194,11 @@ class MftScanner:
 
     def feed(self, idx: int, rec: bytearray) -> None:
         self.records += 1
-        parsed = parse_record(rec)
+        try:
+            parsed = parse_record(rec)
+        except (struct.error, IndexError, ValueError):
+            self.skipped_records += 1  # um registro ilegível não pode derrubar a análise do volume inteiro
+            return
         if parsed is None:
             return
         flags, base, names, std, pieces, has_list = parsed

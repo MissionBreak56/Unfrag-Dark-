@@ -133,6 +133,7 @@ def test_mft_only_for_whole_volume(win, monkeypatch):
     v = make()
     v.use_mft = True
     monkeypatch.setattr(v, "_walk", lambda root, recurse: iter(()), raising=False)
+    monkeypatch.setattr(v, "_check_root", lambda r: r, raising=False)  # caminhos de mentira (teste fora do Windows)
     list(v.iter_files("C:\\Users", True))   # pasta: método clássico
     assert not v.mft_used and fake.reads == 0
     list(v.iter_files("C:\\", False))       # sem recursão: método clássico

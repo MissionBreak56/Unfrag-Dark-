@@ -36,10 +36,23 @@ class FakeVolume(VolumeBackend):
         self.alias: Dict[str, str] = {}  # hard links: nome extra -> nome real
         self.fail_paths: set = set()
         self.moves = 0
+        self.trims = 0
 
     @property
     def is_ssd(self) -> Optional[bool]:
         return self._ssd
+
+    @property
+    def supports_trim(self) -> bool:
+        return True
+
+    def retrim(self, cancel=None):
+        if cancel is not None and cancel.is_set():
+            return False, "cancelado"
+        if self.delay:
+            time.sleep(self.delay * 50)
+        self.trims += 1
+        return True, "TRIM simulado concluído"
 
     # --- construção --------------------------------------------------------
     def add_file(self, path: str, lcns: List[int], skip: Optional[str] = None) -> None:
