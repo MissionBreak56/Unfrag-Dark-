@@ -45,6 +45,11 @@ app.nb.select(0)
 app.start("analyze"); pump(lambda: app.worker is not None and done(), extra=0.8)
 shot("screenshot-analyze.png")
 
+# tema AMOLED (preto puro) com a mesma análise aberta
+app.v_preset.set("AMOLED"); app._pick_preset(); pump(extra=0.8)
+shot("screenshot-amoled.png")
+app.v_preset.set("Azul (padrão)"); app._pick_preset(); pump(extra=0.8)
+
 # detalhe de um bloco fragmentado
 cols, step, size = app._map_geom
 idx = next(i for i, s in enumerate(app.cells) if s == diskmap.FRAGMENTED)

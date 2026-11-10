@@ -21,6 +21,10 @@ em desfragmentadores clássicos para PC.
 |---|---|---|
 | ![Aba Opções](docs/screenshot-options.png) | ![Temas e cores personalizáveis](docs/screenshot-colors.png) | ![Aba Agendamento](docs/screenshot-schedule.png) |
 
+| Tema AMOLED (preto puro) |
+|---|
+| ![Tema AMOLED: fundo preto puro, ideal para telas OLED](docs/screenshot-amoled.png) |
+
 > As capturas usam o **modo demo** (volumes simulados), então nenhum disco real foi tocado. Para refazê-las:
 > `tools/make_screenshots.py`.
 
@@ -72,7 +76,7 @@ unfrag --demo defrag C: --mode freespace
 | Bandeja do sistema: fechar a janela mantém o trabalho rodando; o ícone muda de cor (laranja = trabalhando, verde = concluído, vermelho = erro) | Opções | — |
 | Iniciar com o Windows, minimizado na bandeja | Opções | — |
 | Aviso do Windows ao terminar tarefas agendadas | automático | `--notify` |
-| Temas prontos (Azul, Grafite, Esmeralda, Violeta) e cores individuais | Opções → Cores | — |
+| Temas prontos (Azul, Grafite, Esmeralda, Violeta, **AMOLED** com fundo preto puro) e cores individuais | Opções → Cores | — |
 | Janela lembra tamanho, posição e se estava maximizada; instância única | automático | — |
 | Resumo da última execução, inclusive as feitas por tarefa agendada | ✔ | — |
 | Aviso de versão nova no GitHub (pode ser desligado) | Opções | — |

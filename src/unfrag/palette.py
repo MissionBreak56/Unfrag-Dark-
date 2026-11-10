@@ -32,6 +32,9 @@ PRESETS: Dict[str, Dict[str, str]] = {
                   "bg": "#05140f", "panel": "#0a2119", "accent": "#3ee0a0", "fg": "#e6fff5"},
     "Violeta": {"free": "#6d6788", "used": "#7c4dff", "frag": "#ff5c7a", "unmov": "#ffd24a",
                 "bg": "#0d0a1f", "panel": "#171233", "accent": "#b48cff", "fg": "#f0eaff"},
+    # preto puro (#000000) no fundo: em telas OLED/AMOLED os pixels ficam apagados e economizam bateria
+    "AMOLED": {"free": "#4a505c", "used": "#2f7be8", "frag": "#ff3b3b", "unmov": "#ffd21f",
+               "bg": "#000000", "panel": "#06070a", "accent": "#4cc3ff", "fg": "#f2f5ff"},
 }
 
 # valores derivados do visual padrão (mantidos fixos enquanto as cores de que dependem não mudam)

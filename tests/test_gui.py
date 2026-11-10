@@ -153,6 +153,9 @@ def test_palette_defaults_and_sanitize():
     assert palette.full(changed)["edge"] == full["edge"]
     assert palette.full(dict(palette.DEFAULT_BASE, accent="#ff0000"))["edge"] != full["edge"]
     assert palette.matching_preset(palette.PRESETS["Grafite"]) == "Grafite"
+    amoled = palette.PRESETS["AMOLED"]  # tema AMOLED: fundo preto puro e cores válidas
+    assert amoled["bg"] == "#000000" and palette.sanitize(amoled) == amoled
+    assert palette.matching_preset(amoled) == "AMOLED" and palette.full(amoled)["bg"] == "#000000"
     assert palette.matching_preset(changed) == "Personalizado"
 
 
