@@ -211,3 +211,17 @@ def test_toast_reports_success(monkeypatch):
     monkeypatch.setenv("UNFRAG_TRAY", "1")
     assert notify.toast("pronto", seconds=0.05) is True
     assert shown == [("Unfrag Dark", "pronto")]
+
+
+def test_release_url_and_open_page(monkeypatch):
+    assert updater.release_url("v0.3.1") == "https://github.com/MissionBreak56/Unfrag-Dark-/releases/tag/v0.3.1"
+    assert updater.release_url() == updater.LATEST_URL
+    assert updater.open_page("file:///etc/passwd") is False          # só abre páginas do GitHub
+    assert updater.open_page("https://exemplo.com/x") is False
+    import webbrowser
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.append(u) or True)
+    monkeypatch.setattr(updater.os, "name", "posix")
+    assert updater.open_page(updater.LATEST_URL) is True and opened == [updater.LATEST_URL]
+    monkeypatch.setattr(webbrowser, "open", lambda u: False)
+    assert updater.open_page(updater.LATEST_URL) is False

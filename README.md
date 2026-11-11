@@ -40,8 +40,11 @@ pip install .
 unfrag gui                 :: interface gráfica (execute como Administrador)
 unfrag list
 unfrag analyze C:
-unfrag defrag C: --mode quick
+unfrag defrag C: --mode quick      :: HDD
+unfrag trim E:                     :: SSD (otimização TRIM, no lugar da desfragmentação)
 ```
+
+Cada versão tem seu histórico de mudanças na página de [Releases](https://github.com/MissionBreak56/Unfrag-Dark-/releases).
 
 **Teste sem risco, em qualquer sistema** (Windows, Linux ou macOS), com volumes simulados:
 
@@ -72,17 +75,22 @@ unfrag --demo defrag C: --mode freespace
 | Só executar se a fragmentação for ≥ X% | ✔ | `--min-frag 10` |
 | Não executar na bateria / se certos programas estiverem abertos | ✔ | `--skip-battery` / `--exclude app.exe` |
 | Desligar o PC ao terminar | ✔ | `--shutdown` |
-| Agendamento diário/semanal/mensal (Agendador de Tarefas do Windows) | **Agendamento** | `unfrag schedule create C:` |
+| Agendamento diário/semanal/mensal (Agendador de Tarefas do Windows), inclusive o TRIM de SSD | **Agendamento** | `unfrag schedule create C:` / `--mode trim` |
 | Parar a qualquer momento, com cancelamento seguro | **Parar** | `Ctrl+C` |
 | Bandeja do sistema: fechar a janela mantém o trabalho rodando; o ícone muda de cor (laranja = trabalhando, verde = concluído, vermelho = erro) | Opções | — |
 | Iniciar com o Windows, minimizado na bandeja | Opções | — |
 | Aviso do Windows ao terminar tarefas agendadas | automático | `--notify` |
 | Temas prontos (Azul, Grafite, Esmeralda, Violeta, **AMOLED** com fundo preto puro) e cores individuais | Opções → Cores | — |
-| Janela lembra tamanho, posição e se estava maximizada; instância única | automático | — |
+| A janela lembra o jeito exato em que foi deixada (tela cheia, tamanho, posição e monitor), ao fechar para a bandeja ou de vez; instância única | automático | — |
 | Resumo da última execução, inclusive as feitas por tarefa agendada | ✔ | — |
-| Aviso de versão nova no GitHub (pode ser desligado) | Opções | — |
+| Aviso de versão nova no GitHub ao iniciar (pode ser desligado) | Opções | — |
+| **Procurar atualização:** o botão abre a página da última release no navegador | Opções | — |
 
 Cada botão tem uma explicação (passe o mouse sobre ele) e cada opção tem um texto explicativo na aba Opções.
+
+**SSD ou HDD?** Em HDD a desfragmentação reduz o movimento da cabeça e acelera o disco. Em SSD ela não ajuda e
+só gasta a vida útil da unidade; o certo é o **TRIM** (botão *Otimizar SSD* ou `unfrag trim`), que o próprio
+Windows também faz na "Otimização de unidades".
 
 ## Como funciona
 
@@ -151,6 +159,20 @@ unfrag gui
 unfrag --demo ...          # volumes simulados, não toca em discos
 ```
 
+Códigos de saída (úteis em scripts e tarefas agendadas):
+
+| Código | Significado |
+|---|---|
+| `0` | tudo certo |
+| `1` | terminou, mas com falhas (arquivos que não puderam ser movidos, TRIM que falhou) |
+| `2` | não executou por erro de uso: unidade inexistente ou não suportada, caminho inválido, sem Administrador |
+| `3` | não executou por proteção: na bateria ou com um programa da lista `--exclude` aberto |
+| `4` | SSD não desfragmentado (use `trim`), ou TRIM que não se aplica (HDD) |
+| `130` | cancelado com Ctrl+C |
+
+Variáveis de ambiente: `UNFRAG_THREADS=N` (threads da análise), `UNFRAG_MFT=0|1` (liga/desliga a leitura da
+MFT) e `UNFRAG_TRAY=0` (não cria ícone na bandeja nem avisos).
+
 Exemplos:
 
 ```bat
@@ -165,11 +187,14 @@ unfrag schedule create E: --frequency semanal --time 03:00 --mode trim   # SSD
   disco pode encontrar falhas de hardware ou de energia.
 * **Testes automatizados:** o motor (algoritmo, mapa livre, cancelamento, falhas, hard links, estado
   desatualizado, invariantes de integridade) é testado com um volume simulado, e a interface tem testes de
-  fumaça (121 testes passam com interface gráfica; 87 sem ela).
+  fumaça (160 testes passam com interface gráfica; 121 sem ela). Eles cobrem também SSD/TRIM, o agendador, a
+  leitura da MFT com registros corrompidos, as configurações e a memória do estado da janela.
 * **Validação no Windows:** o workflow [`validar-no-windows`](.github/workflows/validate.yml) roda o programa de
   verdade em um Windows com NTFS, como administrador: compara a leitura da MFT com o método clássico, cria uma
   pasta de teste com arquivos fragmentados de propósito, desfragmenta e confere o SHA-256 de cada arquivo antes
-  e depois, e testa a tarefa de início com o Windows. Isso roda em uma máquina virtual do GitHub, então **não
+  e depois, e testa a tarefa de início com o Windows. Também confere a detecção de SSD, o TRIM de verdade, a
+  recusa de caminhos de outra unidade, caminhos com mais de 260 caracteres e a janela (maximizar, esconder na
+  bandeja, restaurar, sair e reabrir). Isso roda em uma máquina virtual do GitHub, então **não
   substitui** testes em discos e hardware variados: comece por `analyze` e por uma pasta de teste (`--path`)
   antes de desfragmentar a unidade inteira.
 * **SSD:** a desfragmentação é desnecessária e reduz a vida útil. O app recusa desfragmentar SSD (a checagem
@@ -178,7 +203,10 @@ unfrag schedule create E: --frequency semanal --time 03:00 --mode trim   # SSD
   Em outras unidades que não sejam NTFS fixas (pendrives, cartões), a linha de comando também se recusa a agir.
 * **Privacidade:** tudo acontece localmente e não há telemetria. A única conexão de rede é a verificação de
   versão nova, que apenas lê o redirecionamento de `github.com/MissionBreak56/Unfrag-Dark-/releases/latest`
-  (sem enviar dados). Dá para desligá-la em Opções → *Verificar atualizações ao iniciar*.
+  (sem enviar dados). Dá para desligá-la em Opções → *Verificar atualizações ao iniciar*. O botão *Procurar
+  atualização* só abre a página da release no navegador quando você clica, e só abre páginas do GitHub.
+* **Arquivos de configuração** são gravados de forma atômica: se o programa for encerrado no meio, o arquivo
+  antigo continua inteiro.
 * Requer execução como Administrador.
 
 ## Desenvolvimento
@@ -202,7 +230,7 @@ Estrutura de `src/unfrag/`:
 | `diskmap.py`, `palette.py` | mapa de blocos e paleta de cores |
 | `gui.py`, `widgets.py` | interface Tkinter (cartões, abas, botões desenhados em Canvas) |
 | `tray.py`, `notify.py`, `single.py`, `startup.py` | bandeja, avisos, instância única, início com o Windows |
-| `updater.py` | verificação de versão no GitHub |
+| `updater.py` | verificação de versão no GitHub e abertura da página da release |
 | `scheduler.py`, `system.py`, `cli.py` | agendamento, utilidades e linha de comando |
 
 Ferramentas em `tools/`: `make_icon.py` (gera o ícone), `make_screenshots.py` (gera as capturas) e

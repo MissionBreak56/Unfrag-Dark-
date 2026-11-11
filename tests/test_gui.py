@@ -280,7 +280,8 @@ def test_error_while_hidden_notifies_instead_of_dialog(app, monkeypatch):
     assert not shown and app.tray.notes and "algo" in app.tray.notes[-1]
 
 
-def test_update_banner_ignore_and_rebuild(app):
+def test_update_banner_ignore_and_rebuild(app, monkeypatch):
+    monkeypatch.setattr(gui.updater, "open_page", lambda u: True)  # "Verificar agora" abre o navegador: não nos testes
     app._on_update_result(("newer", "v9.9.9", "https://x/y"), False)
     assert app._update == ("v9.9.9", "https://x/y") and app.update_bar.winfo_exists()
     app._set_base(dict(app.base, accent="#ff8800"))
@@ -297,7 +298,8 @@ def test_update_banner_ignore_and_rebuild(app):
     palette.apply_palette(gui.C, palette.DEFAULT_BASE)
 
 
-def test_update_messages(app):
+def test_update_messages(app, monkeypatch):
+    monkeypatch.setattr(gui.updater, "open_page", lambda u: True)
     app._on_update_result(("current", "v0.1.7", None), True)
     assert "mais recente" in app.v_update_msg.get()
     app._on_update_result(("error", None, None), True)
@@ -529,3 +531,40 @@ def test_saved_maximized_state_is_applied_at_startup(tmp_path, monkeypatch):
         assert not a._zoomed
     finally:
         root.destroy()
+
+
+# ---- botão "Procurar atualização": leva à página da última release -----------------------------------
+def test_check_button_opens_the_latest_release_page(app, monkeypatch):
+    opened = []
+    monkeypatch.setattr(gui.updater, "open_page", lambda u: opened.append(u) or True)
+    app._on_update_result(("newer", "v9.9.9", "https://github.com/x/y/releases/tag/v9.9.9"), True)
+    assert opened == ["https://github.com/x/y/releases/tag/v9.9.9"]
+    assert "disponível" in app.v_update_msg.get() and app._update
+    app._on_update_result(("current", "v0.3.1", None), True)         # já está na última: ainda abre a página
+    assert opened[-1] == gui.updater.release_url("v0.3.1")
+    app._on_update_result(("error", None, None), True)               # sem resposta: abre a página geral
+    assert opened[-1] == gui.updater.LATEST_URL and "Não foi possível" in app.v_update_msg.get()
+
+
+def test_automatic_check_never_opens_the_browser(app, monkeypatch):
+    opened = []
+    monkeypatch.setattr(gui.updater, "open_page", lambda u: opened.append(u) or True)
+    app._on_update_result(("newer", "v9.9.9", "https://github.com/x/y/releases/tag/v9.9.9"), False)
+    app._on_update_result(("current", "v0.3.1", None), False)
+    assert opened == []                                              # a verificação ao iniciar é silenciosa
+
+
+def test_browser_failure_copies_the_link_and_tells_the_user(app, monkeypatch):
+    shown = []
+    monkeypatch.setattr(gui.updater, "open_page", lambda u: False)
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda t, m, **k: shown.append(m))
+    app._on_update_result(("newer", "v9.9.9", "https://github.com/x/y/releases/tag/v9.9.9"), True)
+    assert shown and "https://github.com/x/y/releases/tag/v9.9.9" in shown[0]
+    assert app.root.clipboard_get() == "https://github.com/x/y/releases/tag/v9.9.9"
+
+
+def test_update_bar_download_button_uses_the_same_opener(app, monkeypatch):
+    opened = []
+    monkeypatch.setattr(gui.updater, "open_page", lambda u: opened.append(u) or True)
+    app._open_update("https://github.com/x/y/releases/tag/v9.9.9")
+    assert opened == ["https://github.com/x/y/releases/tag/v9.9.9"]

@@ -390,8 +390,10 @@ class App:
         kind, tag, url = result
         if kind != "error":
             self.settings["last_update_check"] = time.time()
+        if manual:  # o botão "Procurar atualização" leva direto à página da última release
+            self._open_release(url or updater.release_url(tag))
         if kind == "newer":
-            self.v_update_msg.set("Versão %s disponível." % tag)
+            self.v_update_msg.set("Versão %s disponível. Abrindo a página da release…" % tag)
             if manual or tag != self.settings.get("ignored_version"):
                 self._update = (tag, url)
                 self._show_update_bar()
@@ -399,9 +401,9 @@ class App:
                 if self._hidden and self.tray:
                     self.tray.notify("Nova versão %s disponível. Abra o Unfrag Dark para baixar." % tag, "Unfrag Dark")
         elif kind == "current":
-            self.v_update_msg.set("Você está na versão mais recente (%s)." % __version__)
+            self.v_update_msg.set("Você está na versão mais recente (%s). Abrindo a página da release…" % __version__)
         elif manual:
-            self.v_update_msg.set("Não foi possível verificar agora (sem internet?).")
+            self.v_update_msg.set("Não foi possível verificar agora (sem internet?). Abrindo a página das releases…")
         self._persist()
 
     def _show_update_bar(self) -> None:
@@ -426,8 +428,19 @@ class App:
         self.update_bar = bar
 
     def _open_update(self, url: str) -> None:
-        import webbrowser
-        webbrowser.open(url)
+        self._open_release(url)
+
+    def _open_release(self, url: str) -> None:
+        """Abre a página no navegador; se não der, copia o link e avisa (nunca falha em silêncio)."""
+        if updater.open_page(url):
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(url)
+        except tk.TclError:
+            pass
+        self._log("Não foi possível abrir o navegador. Link da release: %s" % url)
+        messagebox.showinfo("Unfrag Dark", "Não foi possível abrir o navegador.\n\nO link foi copiado:\n%s" % url)
 
     def _ignore_update(self, tag: str) -> None:
         self.settings["ignored_version"] = tag
@@ -811,7 +824,7 @@ class App:
         upd = ttk.Frame(f)
         upd.grid(row=r, column=0, columnspan=4, sticky="we", pady=(6, 4))
         ttk.Checkbutton(upd, text="Verificar atualizações ao iniciar", variable=self.v_updates).pack(side="left")
-        ttk.Button(upd, text="Verificar agora", command=lambda: self.check_updates(True)).pack(side="left", padx=12)
+        ttk.Button(upd, text="Procurar atualização", command=lambda: self.check_updates(True)).pack(side="left", padx=12)
         ttk.Label(upd, textvariable=self.v_update_msg, style="Muted.TLabel").pack(side="left")
         r += 1
         ttk.Separator(f).grid(row=r, column=0, columnspan=4, sticky="we", pady=(8, 12))

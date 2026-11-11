@@ -4,6 +4,7 @@
 Location. Isso não gasta o limite da API e funciona para qualquer usuário."""
 from __future__ import annotations
 
+import os
 import re
 import urllib.error
 import urllib.request
@@ -12,6 +13,31 @@ from typing import Optional, Tuple
 REPO = "MissionBreak56/Unfrag-Dark-"
 LATEST_URL = "https://github.com/%s/releases/latest" % REPO
 _TAG = re.compile(r"/releases/tag/(v?[0-9][0-9A-Za-z.\-+]*)$")
+
+
+def release_url(tag: Optional[str] = None) -> str:
+    """Página da release `tag`; sem tag, a página que o GitHub redireciona para a última release."""
+    return "https://github.com/%s/releases/tag/%s" % (REPO, tag) if tag else LATEST_URL
+
+
+def open_page(url: str) -> bool:
+    """Abre `url` no navegador padrão. Devolve False se não deu (o chamador mostra o link).
+
+    No Windows usa o ShellExecute (os.startfile), que funciona também quando o programa roda como
+    Administrador; `webbrowser` é o plano B."""
+    if not url.startswith("https://github.com/"):
+        return False
+    if os.name == "nt":
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+            return True
+        except OSError:
+            pass
+    try:
+        import webbrowser
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
 
 
 def parse_version(text: str) -> Tuple[int, ...]:
@@ -50,7 +76,7 @@ def check(current: str, timeout: float = 6.0) -> Optional[Tuple[str, str]]:
     """(tag, url_da_página) se existir versão mais nova que `current`; senão None."""
     tag = latest_tag(timeout)
     if tag and is_newer(tag, current):
-        return tag, "https://github.com/%s/releases/tag/%s" % (REPO, tag)
+        return tag, release_url(tag)
     return None
 
 
@@ -60,5 +86,5 @@ def status(current: str, timeout: float = 6.0) -> Tuple[str, Optional[str], Opti
     if not tag:
         return "error", None, None
     if is_newer(tag, current):
-        return "newer", tag, "https://github.com/%s/releases/tag/%s" % (REPO, tag)
+        return "newer", tag, release_url(tag)
     return "current", tag, None
