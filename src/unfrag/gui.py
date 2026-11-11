@@ -486,27 +486,38 @@ class App:
                 gx = min(max(self._zoom_pt[0] - w // 2, vx0), max(vx0, vx1 - w))
                 gy = min(max(self._zoom_pt[1] - h // 2, vy0), max(vy0, vy1 - h - 50))
         root.geometry("%dx%d+%d+%d" % (w, h, gx, gy))
+        self._zoom_grace = 0.0
         if self._zoomed:
             _set_zoomed(root, True)
+            # Ao abrir, o Windows pode avisar "janela normal" por um instante antes de maximizar: durante
+            # esse período a mudança é ignorada (e conferida de novo ao final) para não esquecer o estado
+            self._zoom_grace = time.time() + 2.0
+            root.after(2200, self._track_window)
         root.bind("<Configure>", self._on_root_configure, add="+")
 
-    def _on_root_configure(self, e) -> None:
-        if e.widget is not self.root:
-            return
+    def _track_window(self) -> None:
+        """Guarda o estado atual da janela: maximizada (e onde) ou o tamanho/posição normais."""
         try:
             st = self.root.state()
         except tk.TclError:
             return
-        if st not in ("iconic", "withdrawn"):  # minimizada ou na bandeja: vale o último estado conhecido
-            if _is_zoomed(self.root):
-                self._zoomed = True
-                self._zoom_pt = (self.root.winfo_x() + self.root.winfo_width() // 2,
-                                 self.root.winfo_y() + self.root.winfo_height() // 2)
-            else:
-                g = _parse_geometry(self.root.geometry())
-                if g and g[0] >= 200 and g[1] >= 200:  # ignora o 1x1 de antes de a janela aparecer
-                    self._zoomed = False
-                    self._geom = g
+        if st in ("iconic", "withdrawn"):  # minimizada ou na bandeja: vale o último estado conhecido
+            return
+        if _is_zoomed(self.root):
+            self._zoomed = True
+            self._zoom_pt = (self.root.winfo_x() + self.root.winfo_width() // 2,
+                             self.root.winfo_y() + self.root.winfo_height() // 2)
+        else:
+            g = _parse_geometry(self.root.geometry())
+            if g and g[0] >= 200 and g[1] >= 200:  # ignora o 1x1 de antes de a janela aparecer
+                self._zoomed = False
+                self._geom = g
+
+    def _on_root_configure(self, e) -> None:
+        if e.widget is not self.root:
+            return
+        if time.time() >= self._zoom_grace:
+            self._track_window()
         if self._save_job:
             self.root.after_cancel(self._save_job)
         # grava a posição pouco depois de parar de mexer: vale mesmo se o programa for morto

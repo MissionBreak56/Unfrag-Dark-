@@ -489,15 +489,14 @@ def test_restore_from_tray_goes_back_to_maximized(app, monkeypatch):
 
 def test_unmaximize_remembers_the_normal_size_and_position(app, monkeypatch):
     monkeypatch.setattr(gui, "_is_zoomed", lambda r: False)
-    app.root.geometry("1250x777+23+45")
+    w, h = app.root.minsize()    # cabe em qualquer tela (a do CI do Windows é pequena)
+    app.root.geometry("%dx%d+23+45" % (w, h))
     app.root.update()
     _configure(app)
-    assert app._geom == (1250, 777, 23, 45) and not app._zoomed
+    assert app._geom == (w, h, 23, 45) and not app._zoomed
     monkeypatch.setattr(gui, "_is_zoomed", lambda r: True)      # maximiza: o tamanho "normal" fica guardado
-    app.root.geometry("1500x900+0+0")
-    app.root.update()
     _configure(app)
-    assert app._zoomed and app._geom == (1250, 777, 23, 45)
+    assert app._zoomed and app._geom == (w, h, 23, 45)
 
 
 def test_minimized_window_keeps_last_known_state(app, monkeypatch):
@@ -511,7 +510,7 @@ def test_minimized_window_keeps_last_known_state(app, monkeypatch):
 def test_saved_maximized_state_is_applied_at_startup(tmp_path, monkeypatch):
     from unfrag import system
     monkeypatch.setenv("APPDATA", str(tmp_path))
-    system.save_settings({"window": dict(w=1000, h=700, x=50, y=40, zoomed=True, sash=0)})
+    system.save_settings({"window": dict(w=1000, h=600, x=50, y=40, zoomed=True, sash=0)})
     calls = []
     monkeypatch.setattr(gui, "_set_zoomed", lambda r, z: calls.append(z))
     try:
@@ -521,6 +520,12 @@ def test_saved_maximized_state_is_applied_at_startup(tmp_path, monkeypatch):
     try:
         a = gui.App(root, demo=True)
         root.update()
-        assert calls == [True] and a._zoomed and a._geom[:2] == (1000, 700)
+        assert calls == [True] and a._zoomed and a._geom[:2] == (1000, 600)
+        monkeypatch.setattr(gui, "_is_zoomed", lambda r: False)   # evento transitório "normal" ao abrir
+        _configure(a)
+        assert a._zoomed        # dentro do período de tolerância: não esquece que estava maximizada
+        a._zoom_grace = 0.0     # passado o período, a mudança passa a valer
+        _configure(a)
+        assert not a._zoomed
     finally:
         root.destroy()
