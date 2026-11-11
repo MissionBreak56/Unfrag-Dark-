@@ -7,6 +7,8 @@
 3. Tarefa agendada de início com o Windows (criar / consultar / apagar), verificação de versão e aviso.
 4. Detecção de SSD, TRIM real (`defrag /L`), recusa de caminhos de outra unidade, caminho com mais de
    260 caracteres e as checagens de unidade da linha de comando.
+5. Janela de verdade: maximizar, esconder (bandeja), restaurar, sair e abrir de novo têm de manter a janela
+   maximizada.
 
 Os resultados saem no log e como anotações (::notice / ::error), para serem lidos pela API do GitHub."""
 from __future__ import annotations
@@ -287,6 +289,73 @@ def step_ssd_trim() -> None:
         endgroup()
 
 
+def step_window_state() -> None:
+    group("5. Janela: maximizada, bandeja e reabertura")
+    try:
+        import tempfile
+        import tkinter as tk
+
+        os.environ["APPDATA"] = tempfile.mkdtemp()  # configurações isoladas
+        os.environ["UNFRAG_TRAY"] = "0"
+        from unfrag import gui, system
+
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            notice("Janela", "sem sessão gráfica no CI (%s): etapa pulada" % exc)
+            return
+
+        def settle(sec: float = 0.6) -> None:
+            end = time.time() + sec
+            while time.time() < end:
+                root.update()
+                time.sleep(0.05)
+
+        notice("Monitores", "área virtual=%s | monitor do ponto (100,100)=%r" % (
+            gui._virtual_screen(root), gui._monitor_of(100, 100)))
+        app = gui.App(root, demo=True)
+        settle(1.0)
+        root.state("zoomed")
+        settle()
+        notice("Maximizada", "state=%s | _is_zoomed=%s | app._zoomed=%s" % (root.state(), gui._is_zoomed(root), app._zoomed))
+        if not (gui._is_zoomed(root) and app._zoomed):
+            fail("Janela maximizada não foi detectada", "state=%s" % root.state())
+        # "fechar para a bandeja": esconde; depois um salvamento adiado, como o de 1,5 s depois de mexer na janela
+        root.withdraw()
+        app._hidden = True
+        settle()
+        app._persist()
+        saved = system.load_settings().get("window", {})
+        notice("Escondida na bandeja", "state=%s | salvo: zoomed=%s" % (root.state(), saved.get("zoomed")))
+        if not saved.get("zoomed"):
+            fail("Estado maximizado perdido ao esconder", str(saved))
+        app.restore()  # abrir pelo ícone da bandeja
+        settle()
+        notice("Restaurada da bandeja", "state=%s | _is_zoomed=%s" % (root.state(), gui._is_zoomed(root)))
+        if not gui._is_zoomed(root):
+            fail("Janela voltou em modo janela ao abrir da bandeja", "state=%s" % root.state())
+        app.quit_app()
+        saved = system.load_settings().get("window", {})
+        notice("Fechada de vez", "salvo: zoomed=%s w=%s h=%s x=%s y=%s" % tuple(
+            saved.get(k) for k in ("zoomed", "w", "h", "x", "y")))
+        if not saved.get("zoomed"):
+            fail("Estado maximizado perdido ao fechar", str(saved))
+        root2 = tk.Tk()
+        app2 = gui.App(root2, demo=True)
+        end = time.time() + 1.5
+        while time.time() < end:
+            root2.update()
+            time.sleep(0.05)
+        notice("Reaberta", "state=%s | _is_zoomed=%s" % (root2.state(), gui._is_zoomed(root2)))
+        if not gui._is_zoomed(root2):
+            fail("Programa reabriu em modo janela", "state=%s" % root2.state())
+        app2.quit_app()
+    except Exception:
+        fail("Etapa da janela falhou com exceção", traceback.format_exc()[-1500:])
+    finally:
+        endgroup()
+
+
 def main() -> int:
     notice("Ambiente", "Python %s | administrador: %s | unidade %s:" % (sys.version.split()[0], is_admin(), LETTER))
     if not is_admin():
@@ -297,6 +366,7 @@ def main() -> int:
         step_defrag()
     step_misc()
     step_ssd_trim()
+    step_window_state()
     shutil.rmtree(TESTDIR, ignore_errors=True)
     print("\n===== RESUMO =====")
     print("\n".join(SUMMARY))

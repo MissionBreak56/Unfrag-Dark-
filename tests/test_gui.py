@@ -438,3 +438,89 @@ def test_shutdown_only_after_a_successful_operation(app, monkeypatch):
     app._last_mode = "defrag"
     app._handle(("done",))
     assert calls == [60]
+
+
+# ---- a janela lembra o jeito exato em que foi deixada (maximizada, posição, tamanho) -------------------
+import types as _types
+
+
+def test_parse_geometry():
+    assert gui._parse_geometry("1280x820+100+50") == (1280, 820, 100, 50)
+    assert gui._parse_geometry("1280x820+-8+-8") == (1280, 820, -8, -8)   # segundo monitor, à esquerda
+    assert gui._parse_geometry("900x700-1920+30") == (900, 700, -1920, 30)
+    assert gui._parse_geometry("1x1+0+0") == (1, 1, 0, 0)
+    assert gui._parse_geometry("lixo") is None
+
+
+def _configure(app):
+    app._on_root_configure(_types.SimpleNamespace(widget=app.root))
+
+
+def test_maximized_survives_hiding_to_tray_and_quitting(app, monkeypatch):
+    from unfrag import system
+    app.tray = FakeTray()
+    monkeypatch.setattr(gui, "_is_zoomed", lambda r: True)      # o usuário maximizou a janela
+    _configure(app)
+    assert app._zoomed
+    app.on_close()                                              # X: vai para a bandeja
+    assert app._hidden and system.load_settings()["window"]["zoomed"] is True
+    # escondida, o Windows diz que o estado é "withdrawn" (não "zoomed"): isso não pode apagar o que já sabemos
+    monkeypatch.setattr(gui, "_is_zoomed", lambda r: False)
+    _configure(app)
+    app._persist()                                              # ex.: gravação adiada de 1,5 s
+    assert system.load_settings()["window"]["zoomed"] is True
+    app._tray_action("quit")                                    # "Sair" pelo ícone da bandeja
+    assert system.load_settings()["window"]["zoomed"] is True
+
+
+def test_restore_from_tray_goes_back_to_maximized(app, monkeypatch):
+    calls = []
+    monkeypatch.setattr(gui, "_set_zoomed", lambda r, z: calls.append(z))
+    app.tray = FakeTray()
+    app._zoomed = True
+    app.on_close()
+    app.restore()
+    assert calls[-1] is True       # antes forçava "normal" e a janela voltava pequena
+    app._zoomed = False
+    app.on_close()
+    app.restore()
+    assert calls[-1] is False
+
+
+def test_unmaximize_remembers_the_normal_size_and_position(app, monkeypatch):
+    monkeypatch.setattr(gui, "_is_zoomed", lambda r: False)
+    app.root.geometry("1250x777+23+45")
+    app.root.update()
+    _configure(app)
+    assert app._geom == (1250, 777, 23, 45) and not app._zoomed
+    monkeypatch.setattr(gui, "_is_zoomed", lambda r: True)      # maximiza: o tamanho "normal" fica guardado
+    app.root.geometry("1500x900+0+0")
+    app.root.update()
+    _configure(app)
+    assert app._zoomed and app._geom == (1250, 777, 23, 45)
+
+
+def test_minimized_window_keeps_last_known_state(app, monkeypatch):
+    app._zoomed = True
+    monkeypatch.setattr(gui, "_is_zoomed", lambda r: False)
+    monkeypatch.setattr(app.root, "state", lambda *a: "iconic")  # minimizada
+    _configure(app)
+    assert app._zoomed            # minimizar uma janela maximizada não a "desmaximiza"
+
+
+def test_saved_maximized_state_is_applied_at_startup(tmp_path, monkeypatch):
+    from unfrag import system
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    system.save_settings({"window": dict(w=1000, h=700, x=50, y=40, zoomed=True, sash=0)})
+    calls = []
+    monkeypatch.setattr(gui, "_set_zoomed", lambda r, z: calls.append(z))
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("sem display")
+    try:
+        a = gui.App(root, demo=True)
+        root.update()
+        assert calls == [True] and a._zoomed and a._geom[:2] == (1000, 700)
+    finally:
+        root.destroy()

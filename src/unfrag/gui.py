@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -51,6 +52,72 @@ def _num(var, cast=int, default=0, lo=None, hi=None):
     if hi is not None:
         v = min(hi, v)
     return v
+
+
+def _is_zoomed(root: tk.Tk) -> bool:
+    """A janela está maximizada? (Windows: state "zoomed"; X11: atributo -zoomed.)"""
+    try:
+        if root.state() == "zoomed":
+            return True
+    except tk.TclError:
+        pass
+    try:
+        return bool(root.attributes("-zoomed"))
+    except tk.TclError:
+        return False
+
+
+def _set_zoomed(root: tk.Tk, zoomed: bool) -> None:
+    try:
+        root.state("zoomed" if zoomed else "normal")
+    except tk.TclError:
+        try:
+            root.attributes("-zoomed", zoomed)
+        except tk.TclError:
+            pass
+
+
+_GEOM = re.compile(r"^(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)$")
+
+
+def _parse_geometry(text: str):
+    """"1280x820+100+-8" -> (1280, 820, 100, -8); None se não for uma geometria."""
+    m = _GEOM.match(text.strip())
+    if not m:
+        return None
+    try:
+        return tuple(int(g.replace("+-", "-").lstrip("+")) for g in m.groups())
+    except ValueError:
+        return None
+
+
+def _virtual_screen(root: tk.Tk):
+    """Retângulo (x0, y0, x1, y1) que cobre TODOS os monitores (no Windows pode ter x/y negativos)."""
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            gm = ctypes.windll.user32.GetSystemMetrics
+            x0, y0, w, h = gm(76), gm(77), gm(78), gm(79)  # SM_X/YVIRTUALSCREEN, SM_CX/CYVIRTUALSCREEN
+            if w > 0 and h > 0:
+                return x0, y0, x0 + w, y0 + h
+        except Exception:
+            pass
+    return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
+
+def _monitor_of(x: int, y: int):
+    """Identificador do monitor que contém o ponto, ou None (fora do Windows / sem resposta)."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes as wt
+        f = ctypes.windll.user32.MonitorFromPoint
+        f.argtypes = [wt.POINT, wt.DWORD]
+        f.restype = ctypes.c_void_p
+        return f(wt.POINT(int(x), int(y)), 2) or None  # MONITOR_DEFAULTTONEAREST
+    except Exception:
+        return None
 
 
 def _dark_titlebar(root: tk.Tk) -> None:
@@ -382,37 +449,64 @@ class App:
     # --- janela: tamanho/posição ------------------------------------------
     def _setup_window(self) -> None:
         """Tamanho inicial que cabe na tela (evita cortar a barra de baixo em telas pequenas) e
-        restauração da última posição/tamanho, sempre mantendo a janela visível."""
+        restauração do jeito exato em que o usuário deixou a janela: tamanho, posição (também em
+        outro monitor) e maximizada ou não, sempre mantendo a janela visível."""
         root = self.root
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        vx0, vy0, vx1, vy1 = _virtual_screen(root)
         root.minsize(min(1180, sw - 40), min(640, sh - 90))  # nunca maior que a janela inicial
         w = min(1280, sw - 40)
         h = min(820, sh - 90)  # sobra espaço para a barra de tarefas e a barra de título
         x, y = max(0, (sw - w) // 2), max(0, (sh - h) // 3)
         saved = self.settings.get("window") or {}
+        self._zoomed = bool(saved.get("zoomed"))
+        self._zoom_pt = None
         try:
             sw_, sh_, sx, sy = (int(saved[k]) for k in ("w", "h", "x", "y"))
             if sw_ >= 600 and sh_ >= 400:
-                w, h = min(sw_, sw - 20), min(sh_, sh - 60)
-                x = min(max(sx, 0), max(0, sw - w - 10))   # nunca fora da tela
-                y = min(max(sy, 0), max(0, sh - h - 50))
+                w, h = min(sw_, vx1 - vx0), min(sh_, (vy1 - vy0) - 60)
+                x = min(max(sx, vx0), max(vx0, vx1 - w))   # nunca fora da área dos monitores
+                y = min(max(sy, vy0), max(vy0, vy1 - h - 50))
         except (KeyError, TypeError, ValueError):
             pass
-        self._geom = (w, h, x, y)
+        try:  # onde ficava o centro da janela maximizada: diz em qual monitor ela estava
+            zp = (int(saved["zx"]), int(saved["zy"]))
+            if vx0 <= zp[0] < vx1 and vy0 <= zp[1] < vy1:
+                self._zoom_pt = zp
+        except (KeyError, TypeError, ValueError):
+            pass
+        self._geom = (w, h, x, y)  # geometria "normal": é a que volta ao desmaximizar
         self._save_job = None
-        root.geometry("%dx%d+%d+%d" % (w, h, x, y))
-        if saved.get("zoomed"):
-            try:
-                root.state("zoomed")
-            except tk.TclError:
-                pass
+        gx, gy = x, y
+        if self._zoomed and self._zoom_pt:
+            # maximizar abre no monitor onde a janela normal está: se o usuário a deixou maximizada em
+            # outro monitor, posiciona a janela lá antes de maximizar
+            m_zoom, m_norm = _monitor_of(*self._zoom_pt), _monitor_of(x + w // 2, y + h // 2)
+            if m_zoom and m_norm and m_zoom != m_norm:
+                gx = min(max(self._zoom_pt[0] - w // 2, vx0), max(vx0, vx1 - w))
+                gy = min(max(self._zoom_pt[1] - h // 2, vy0), max(vy0, vy1 - h - 50))
+        root.geometry("%dx%d+%d+%d" % (w, h, gx, gy))
+        if self._zoomed:
+            _set_zoomed(root, True)
         root.bind("<Configure>", self._on_root_configure, add="+")
 
     def _on_root_configure(self, e) -> None:
         if e.widget is not self.root:
             return
-        if self.root.state() == "normal":
-            self._geom = (self.root.winfo_width(), self.root.winfo_height(), self.root.winfo_x(), self.root.winfo_y())
+        try:
+            st = self.root.state()
+        except tk.TclError:
+            return
+        if st not in ("iconic", "withdrawn"):  # minimizada ou na bandeja: vale o último estado conhecido
+            if _is_zoomed(self.root):
+                self._zoomed = True
+                self._zoom_pt = (self.root.winfo_x() + self.root.winfo_width() // 2,
+                                 self.root.winfo_y() + self.root.winfo_height() // 2)
+            else:
+                g = _parse_geometry(self.root.geometry())
+                if g and g[0] >= 200 and g[1] >= 200:  # ignora o 1x1 de antes de a janela aparecer
+                    self._zoomed = False
+                    self._geom = g
         if self._save_job:
             self.root.after_cancel(self._save_job)
         # grava a posição pouco depois de parar de mexer: vale mesmo se o programa for morto
@@ -421,14 +515,13 @@ class App:
     def _window_state(self) -> dict:
         w, h, x, y = self._geom
         try:
-            zoomed = self.root.state() == "zoomed"
-        except tk.TclError:
-            zoomed = False
-        try:
             sash = int(self.paned.sashpos(0))
         except (tk.TclError, AttributeError):
             sash = int(self.settings.get("window", {}).get("sash", 0) or 0)
-        return dict(w=w, h=h, x=x, y=y, zoomed=zoomed, sash=sash)
+        state = dict(w=w, h=h, x=x, y=y, zoomed=bool(self._zoomed), sash=sash)
+        if self._zoom_pt:
+            state.update(zx=self._zoom_pt[0], zy=self._zoom_pt[1])
+        return state
 
     # --- cores -------------------------------------------------------------
     def _pick_color(self, key: str) -> None:
@@ -1366,10 +1459,7 @@ class App:
             self._tray_state_cur = "idle"  # o usuário já viu o resultado
         self.root.deiconify()
         self.root.after(60, self._set_sash)
-        try:
-            self.root.state("normal")
-        except tk.TclError:
-            pass
+        _set_zoomed(self.root, self._zoomed)  # volta do jeito que estava: maximizada ou em janela
         self.root.lift()
         self.root.focus_force()
 
