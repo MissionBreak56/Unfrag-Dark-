@@ -12,13 +12,14 @@ from . import __version__, scheduler
 from .backends import IS_WINDOWS, list_drives, open_volume
 from .engine import Engine, Options, Report, SsdSkipped, TrimNotApplicable
 from .model import AnalysisResult
-from .system import MAX_THREADS, auto_threads, fmt_bytes, guard_reason, shutdown_soon
+from .system import Eta, MAX_THREADS, auto_threads, fmt_bytes, guard_reason, shutdown_soon
 
 PHASES = {"scan": "Analisando", "defrag": "Desfragmentando", "compact": "Compactando espaço livre",
           "toend": "Movendo arquivos grandes para o fim", "trim": "Otimizando (TRIM)"}
 
 
 _last_progress = [0.0]
+_eta = Eta()
 
 
 def _progress(phase: str, done: int, total: int, msg: str) -> None:
@@ -30,6 +31,9 @@ def _progress(phase: str, done: int, total: int, msg: str) -> None:
     _last_progress[0] = now
     label = PHASES.get(phase, phase)
     tail = msg[-48:] if msg else ""
+    eta = _eta.text(phase, done, total)
+    if eta:
+        tail = ("%s · %s" % (eta, tail))[:48]
     cnt = "%d/%d" % (done, total) if total else ("" if phase == "trim" else str(done))
     sys.stdout.write("\r%-34s %-12s %-48s" % (label, cnt, tail))
     sys.stdout.flush()
@@ -343,7 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("schedule", help="cria/remove tarefa agendada (Windows)")
     s.add_argument("action", choices=["create", "delete"])
     s.add_argument("drive")
-    s.add_argument("--frequency", choices=["diária", "semanal", "mensal"], default="semanal")
+    s.add_argument("--frequency", choices=list(scheduler.FREQUENCIES), default="semanal",
+                   help="inicialização = ao ligar o Windows, antes de os programas abrirem arquivos")
     s.add_argument("--time", default="03:00", help="HH:MM")
     s.add_argument("--mode", choices=list(scheduler.MODES), default="quick",
                    help="trim = otimização de SSD (use em SSD no lugar da desfragmentação)")

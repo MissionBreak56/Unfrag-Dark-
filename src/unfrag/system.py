@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import sys
 from typing import Iterable, Optional
 
@@ -121,3 +122,34 @@ def load_last_run() -> dict:
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+class Eta:
+    """Estimativa de tempo restante de uma fase (média desde o início da fase; pausas não contam)."""
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._phase = None
+        self._t0 = 0.0
+
+    def text(self, phase: str, done: int, total: int) -> str:
+        now = self._clock()
+        if phase != self._phase:
+            self._phase, self._t0 = phase, now
+        if not total or done <= 0 or done >= total or now - self._t0 < 3:
+            return ""  # sem dados suficientes para estimar
+        left = (now - self._t0) / done * (total - done)
+        return "~%s restantes" % fmt_duration(left)
+
+    def shift(self, seconds: float) -> None:
+        """Desconta um período em que a operação ficou pausada."""
+        self._t0 += seconds
+
+
+def fmt_duration(sec: float) -> str:
+    sec = int(round(sec))
+    if sec < 60:
+        return "%d s" % sec
+    if sec < 3600:
+        return "%d min %02d s" % divmod(sec, 60)
+    return "%d h %02d min" % (sec // 3600, sec % 3600 // 60)

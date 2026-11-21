@@ -16,7 +16,7 @@ from .backends import IS_WINDOWS, list_drives, open_volume
 from .engine import Cancelled, Engine, Options, Report, SsdSkipped, TrimNotApplicable
 from .model import AnalysisResult, DriveInfo
 from .single import SingleInstance, show_already_running
-from .system import load_last_run, MAX_THREADS, auto_threads, fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
+from .system import Eta, load_last_run, MAX_THREADS, auto_threads, fmt_bytes, guard_reason, load_settings, save_settings, shutdown_soon
 from .resources import resource_path
 from .tray import Tray
 from . import widgets
@@ -333,6 +333,9 @@ class App:
         self.demo = demo or not IS_WINDOWS
         self.q: "queue.Queue[tuple]" = queue.Queue()
         self.cancel = threading.Event()
+        self.pause = threading.Event()
+        self.eta = Eta()
+        self._paused_at = 0.0
         self.worker: Optional[threading.Thread] = None
         self.engine: Optional[Engine] = None
         self.drives: Dict[str, DriveInfo] = {}
@@ -642,6 +645,11 @@ class App:
             self.btns.append(b)
         self.btn_stop = PillButton(bar, "Parar", command=self.stop, kind="danger", bg=C["bg"], state="disabled")
         self.btn_stop.pack(side="left")
+        self.btn_pause = PillButton(bar, "Pausar", command=self.toggle_pause, bg=C["bg"], state="disabled")
+        self.btn_pause.pack(side="left", padx=(8, 0))
+        ToolTip(self.btn_pause, "Pausar / Retomar",
+                "Segura a operação no próximo ponto seguro, sem desfazer nada; Retomar continua de onde parou. "
+                "Parar continua funcionando durante a pausa.")
 
         if IS_WINDOWS and not self.demo:
             from .backends.windows import is_admin
@@ -999,6 +1007,10 @@ class App:
         for b in self.btns:
             b.configure(state="disabled" if busy else "normal")
         self.btn_stop.configure(state="normal" if busy else "disabled")
+        self.btn_pause.configure(state="normal" if busy else "disabled")
+        if not busy:
+            self.pause.clear()
+            self.btn_pause.configure(text="Pausar")
         self.tree.configure(selectmode="none" if busy else "browse")
 
     # --- execução ----------------------------------------------------------
@@ -1077,6 +1089,7 @@ class App:
         prev_engine, eng = self.engine, None
         try:
             eng = Engine(vol, progress=prog, cancel=self.cancel)
+            eng.pause = self.pause
             if mode == "trim":  # não analisa nem mexe no mapa que já está na tela
                 self.q.put(("trim_done", eng.trim()))
             else:
@@ -1104,7 +1117,20 @@ class App:
             vol.close()
             self.q.put(("done",))
 
+    def toggle_pause(self) -> None:
+        if self.pause.is_set():
+            self.pause.clear()
+            self.eta.shift(time.monotonic() - self._paused_at)
+            self.btn_pause.configure(text="Pausar")
+            self.v_status.set("Retomando…")
+        else:
+            self.pause.set()
+            self._paused_at = time.monotonic()
+            self.btn_pause.configure(text="Retomar")
+            self.v_status.set("Pausado. Clique em Retomar para continuar.")
+
     def stop(self) -> None:
+        self.pause.clear()  # sai da pausa para o cancelamento ser percebido
         self.cancel.set()
         self.v_status.set("Parando após a operação atual…")
 
@@ -1131,7 +1157,8 @@ class App:
                     self.progress.stop()
                     self.progress.configure(mode="determinate")
                 self.progress.configure(value=100.0 * done / max(1, total), maximum=100)
-                self.v_status.set("%s: %d/%d  %s" % (label, done, total, msg[-70:]))
+                eta = self.eta.text(phase, done, total)
+                self.v_status.set("%s: %d/%d  %s%s" % (label, done, total, msg[-70:], "  ·  " + eta if eta else ""))
             else:
                 self.v_status.set("%s: %d arquivos…" % (label, done))
             self._tray_title(self.v_status.get())

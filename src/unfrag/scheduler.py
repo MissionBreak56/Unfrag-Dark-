@@ -9,7 +9,8 @@ from typing import List
 from .system import NO_WINDOW
 
 TASK_FOLDER = "UnfragDark"
-FREQUENCIES = {"diária": "DAILY", "semanal": "WEEKLY", "mensal": "MONTHLY"}
+FREQUENCIES = {"diária": "DAILY", "semanal": "WEEKLY", "mensal": "MONTHLY", "inicialização": "ONSTART"}
+# ONSTART roda na inicialização do Windows, antes de os programas do usuário abrirem arquivos
 MODES = ("quick", "defrag", "freespace", "trim")  # trim = otimização de SSD (sem mover arquivos)
 _LETTER = re.compile(r"^[A-Za-z]$")
 _TIME = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
@@ -47,6 +48,9 @@ def build_create_args(letter: str, mode: str, frequency: str, time_hhmm: str,
         cmd = "%s trim %s: --skip-battery --notify" % (_app_command(), drive)
     else:
         cmd = "%s defrag %s: --mode %s --skip-battery --notify %s" % (_app_command(), drive, mode, extra)
+    if sc == "ONSTART":  # sem horário; como SYSTEM; espera 2 min para o Windows terminar de subir
+        return ["schtasks", "/Create", "/F", "/TN", task_name(letter, frequency), "/SC", sc, "/DELAY", "0002:00",
+                "/RU", "SYSTEM", "/RL", "HIGHEST", "/TR", cmd.strip()]
     return ["schtasks", "/Create", "/F", "/TN", task_name(letter, frequency), "/SC", sc,
             "/ST", time_hhmm, "/RL", "HIGHEST", "/TR", cmd.strip()]
 

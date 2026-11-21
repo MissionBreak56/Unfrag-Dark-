@@ -62,21 +62,33 @@ jobs:
           path: dist/*.exe
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Release automática: ao subir na main uma versão (pyproject.toml) que ainda não tem release,
+    # ou ao empurrar uma tag v*. Basta aumentar a versão para publicar.
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     needs: windows-exe
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: UnfragDark-windows
           path: dist
       - name: Checksums
         run: cd dist && sha256sum *.exe > SHA256SUMS.txt
-      - name: Publicar release
+      - name: Publicar release (se ainda não existir)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/* \
-            --repo "${{ github.repository }}" \
-            --title "Unfrag Dark ${{ github.ref_name }}" \
-            --notes "Unfrag Dark. UnfragDark.exe (interface gráfica escura) e unfrag.exe (linha de comando). Ambos pedem execução como Administrador. Validado em Windows NTFS no CI, mas não em hardware variado: faça backup e comece por 'unfrag analyze C:'. Use '--demo' para testar sem tocar em discos."
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v$(sed -n 's/^version *= *"\(.*\)"/\1/p' pyproject.toml | head -1)"
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG já existe; nada a fazer."
+            exit 0
+          fi
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Unfrag Dark $TAG" --generate-notes \
+            --notes "UnfragDark.exe (interface gráfica escura) e unfrag.exe (linha de comando). Ambos pedem execução como Administrador. Validado em Windows NTFS no CI, mas não em hardware variado: faça backup e comece por 'unfrag analyze C:'. Use '--demo' para testar sem tocar em discos."

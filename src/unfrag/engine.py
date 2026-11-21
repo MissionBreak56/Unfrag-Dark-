@@ -94,6 +94,7 @@ class Engine:
         self.backend = backend
         self.progress = progress
         self.cancel = cancel or threading.Event()
+        self.pause = threading.Event()  # set = pausado; a operação espera no próximo ponto seguro
         self.chunk = chunk
         self.files: Dict[str, FileInfo] = {}
         self.free = FreeMap()
@@ -109,6 +110,8 @@ class Engine:
             self.progress(phase, done, total, msg)
 
     def _check_cancel(self) -> None:
+        while self.pause.is_set() and not self.cancel.is_set():
+            time.sleep(0.1)  # pausado: espera sem mover nada; Parar continua funcionando
         if self.cancel.is_set():
             raise Cancelled()
 

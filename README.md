@@ -75,8 +75,11 @@ unfrag --demo defrag C: --mode freespace
 | Só executar se a fragmentação for ≥ X% | ✔ | `--min-frag 10` |
 | Não executar na bateria / se certos programas estiverem abertos | ✔ | `--skip-battery` / `--exclude app.exe` |
 | Desligar o PC ao terminar | ✔ | `--shutdown` |
-| Agendamento diário/semanal/mensal (Agendador de Tarefas do Windows), inclusive o TRIM de SSD | **Agendamento** | `unfrag schedule create C:` / `--mode trim` |
+| Agendamento diário/semanal/mensal/na inicialização (Agendador de Tarefas do Windows), inclusive o TRIM de SSD | **Agendamento** | `unfrag schedule create C:` / `--mode trim` |
 | Parar a qualquer momento, com cancelamento seguro | **Parar** | `Ctrl+C` |
+| **Pausar e retomar** a operação sem desfazer nada (o Parar continua valendo durante a pausa) | **Pausar / Retomar** | — |
+| **Tempo restante estimado** durante a análise e a desfragmentação (pausas não contam) | ✔ | ✔ |
+| **Tarefa ao ligar o Windows** (antes de os programas abrirem arquivos): desfragmenta arquivos que ficam travados com o sistema em uso | **Agendamento → inicialização** | `unfrag schedule create C: --frequency inicialização` |
 | Bandeja do sistema: fechar a janela mantém o trabalho rodando; o ícone muda de cor (laranja = trabalhando, verde = concluído, vermelho = erro) | Opções | — |
 | Iniciar com o Windows, minimizado na bandeja | Opções | — |
 | Aviso do Windows ao terminar tarefas agendadas | automático | `--notify` |
@@ -91,6 +94,10 @@ Cada botão tem uma explicação (passe o mouse sobre ele) e cada opção tem um
 **SSD ou HDD?** Em HDD a desfragmentação reduz o movimento da cabeça e acelera o disco. Em SSD ela não ajuda e
 só gasta a vida útil da unidade; o certo é o **TRIM** (botão *Otimizar SSD* ou `unfrag trim`), que o próprio
 Windows também faz na "Otimização de unidades".
+
+> **Sobre a tarefa de inicialização:** ela roda como SYSTEM 2 minutos depois do boot. Arquivos que o próprio
+> Windows mantém fixos pela API (como `pagefile.sys` e a MFT) continuam não movíveis; um desfragmentador de
+> boot de verdade, em modo nativo antes do Windows subir, não existe nesta versão.
 
 ## Como funciona
 
@@ -242,3 +249,8 @@ funcionalidades) e [`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md).
 ## Licença
 
 MIT. Veja [LICENSE](LICENSE).
+
+## Releases automáticas
+
+Ao subir na `main` uma versão nova em `pyproject.toml`, o workflow `build` compila os `.exe`, gera o
+`SHA256SUMS.txt` e publica a release `vX.Y.Z` sozinho (se ela ainda não existir). Empurrar uma tag `v*` também funciona.
