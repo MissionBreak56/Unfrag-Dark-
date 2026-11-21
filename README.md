@@ -253,4 +253,4 @@ MIT. Veja [LICENSE](LICENSE).
 ## Releases automáticas
 
 Ao subir na `main` uma versão nova em `pyproject.toml`, o workflow `build` compila os `.exe`, gera o
-`SHA256SUMS.txt` e publica a release `vX.Y.Z` sozinho (se ela ainda não existir). Empurrar uma tag `v*` também funciona.
+`SHA256SUMS.txt` e publica a release `vX.Y.Z` sozinho. O texto da release é a seção `## vX.Y.Z` do [`CHANGELOG.md`](CHANGELOG.md) (sem ela, o workflow falha de propósito). Empurrar uma tag `v*` também funciona.
